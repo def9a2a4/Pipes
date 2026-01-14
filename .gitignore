@@ -1,0 +1,18 @@
+server/*
+
+ref/**
+heads/**
+
+# python
+__pycache__/**
+*.pyc
+
+
+# Gradle
+.gradle/
+build/
+out/
+bin/
+
+# VS Code
+.vscode/

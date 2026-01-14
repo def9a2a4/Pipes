@@ -1,0 +1,35 @@
+name: CopperPipes
+main: com.example.copperpipes.CopperPipesPlugin
+version: ${version}
+api-version: 1.21
+author: You
+description: Copper item pipes for transferring items between containers
+
+commands:
+  copperpipes:
+    description: CopperPipes admin commands
+    usage: /copperpipes <reload|give|recipes|cleanup|info|delete_all>
+    permission: copperpipes.admin
+
+permissions:
+  copperpipes.admin:
+    description: Allows access to all CopperPipes commands
+    default: op
+  copperpipes.reload:
+    description: Allows reloading the config
+    default: op
+  copperpipes.give:
+    description: Allows giving pipe items
+    default: op
+  copperpipes.recipes:
+    description: Allows unlocking all pipe recipes
+    default: op
+  copperpipes.cleanup:
+    description: Allows cleaning up orphaned display entities
+    default: op
+  copperpipes.info:
+    description: Allows viewing pipe statistics
+    default: op
+  copperpipes.delete_all:
+    description: Allows deleting all pipes
+    default: op

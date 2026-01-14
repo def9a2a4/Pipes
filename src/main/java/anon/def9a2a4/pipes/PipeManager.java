@@ -1,4 +1,4 @@
-package com.example.copperpipes;
+package anon.def9a2a4.pipes;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -21,7 +21,7 @@ import org.joml.Vector3f;
 
 import org.bukkit.Chunk;
 
-import com.example.copperpipes.config.DisplayConfig;
+import anon.def9a2a4.pipes.config.DisplayConfig;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -37,13 +37,13 @@ public class PipeManager {
 
     private record DestinationResult(Location destination, Location lastPipeLocation, int minItemsPerTransfer) {}
 
-    private final CopperPipesPlugin plugin;
+    private final PipesPlugin plugin;
     private final Map<Location, PipeData> pipes = new HashMap<>();
     private final Map<Location, Long> lastTransferTime = new HashMap<>();
     private BukkitTask transferTask;
     private BukkitTask particleTask;
 
-    public PipeManager(CopperPipesPlugin plugin) {
+    public PipeManager(PipesPlugin plugin) {
         this.plugin = plugin;
     }
 

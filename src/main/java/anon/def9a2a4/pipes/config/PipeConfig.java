@@ -1,4 +1,4 @@
-package com.example.copperpipes.config;
+package anon.def9a2a4.pipes.config;
 
 import org.bukkit.configuration.file.FileConfiguration;
 

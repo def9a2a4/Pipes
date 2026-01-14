@@ -1,4 +1,4 @@
-package com.example.copperpipes;
+package anon.def9a2a4.pipes;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
@@ -19,7 +19,7 @@ import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.event.world.ChunkUnloadEvent;
 import org.bukkit.Location;
-import com.example.copperpipes.PipeManager.PipeData;
+import anon.def9a2a4.pipes.PipeManager.PipeData;
 import com.destroystokyo.paper.event.block.BlockDestroyEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.SkullMeta;
@@ -34,11 +34,11 @@ import java.util.stream.Collectors;
 
 public class PipeListener implements Listener {
 
-    private final CopperPipesPlugin plugin;
+    private final PipesPlugin plugin;
     private final PipeManager pipeManager;
     private final Random random = new Random();
 
-    public PipeListener(CopperPipesPlugin plugin, PipeManager pipeManager) {
+    public PipeListener(PipesPlugin plugin, PipeManager pipeManager) {
         this.plugin = plugin;
         this.pipeManager = pipeManager;
     }

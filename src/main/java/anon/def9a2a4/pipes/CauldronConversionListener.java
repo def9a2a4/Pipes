@@ -1,4 +1,4 @@
-package com.example.copperpipes;
+package anon.def9a2a4.pipes;
 
 import org.bukkit.Material;
 import org.bukkit.Particle;
@@ -21,10 +21,10 @@ import java.util.Map;
  */
 public class CauldronConversionListener implements Listener {
 
-    private final CopperPipesPlugin plugin;
+    private final PipesPlugin plugin;
     private final Map<String, String> conversions = new HashMap<>();
 
-    public CauldronConversionListener(CopperPipesPlugin plugin) {
+    public CauldronConversionListener(PipesPlugin plugin) {
         this.plugin = plugin;
         loadConversions();
     }

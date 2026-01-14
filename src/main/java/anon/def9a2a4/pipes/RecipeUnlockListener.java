@@ -1,4 +1,4 @@
-package com.example.copperpipes;
+package anon.def9a2a4.pipes;
 
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Bukkit;
@@ -15,11 +15,11 @@ import org.bukkit.event.player.PlayerJoinEvent;
  */
 public class RecipeUnlockListener implements Listener {
 
-    private final CopperPipesPlugin plugin;
+    private final PipesPlugin plugin;
     private final RecipeManager recipeManager;
     private final NamespacedKey unlockAdvancementKey;
 
-    public RecipeUnlockListener(CopperPipesPlugin plugin, RecipeManager recipeManager) {
+    public RecipeUnlockListener(PipesPlugin plugin, RecipeManager recipeManager) {
         this.plugin = plugin;
         this.recipeManager = recipeManager;
         this.unlockAdvancementKey = parseUnlockAdvancement();

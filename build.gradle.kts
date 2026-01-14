@@ -1,9 +1,10 @@
 plugins {
-    `java`
+    java
+    id("com.gradleup.shadow") version "9.3.0"
 }
 
-group = "com.example"
-version = "1.0.0"
+group = "anon.def9a2a4"
+version = "0.1.0"
 
 java {
     toolchain {
@@ -21,6 +22,7 @@ repositories {
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.8-R0.1-SNAPSHOT")
+    implementation("org.bstats:bstats-bukkit:3.1.0")
 }
 
 tasks {
@@ -34,9 +36,16 @@ tasks {
     }
 
     jar {
-        archiveBaseName.set("CopperPipes")
+        archiveBaseName.set("Pipes")
         manifest {
             attributes["paperweight-mappings-namespace"] = "mojang"
         }
+    }
+
+    shadowJar {
+        relocate("org.bstats", "anon.def9a2a4.bstats")
+        mergeServiceFiles()
+        archiveClassifier.set("")
+        archiveBaseName.set("Pipes")
     }
 }

@@ -1,6 +1,6 @@
-package com.example.copperpipes;
+package anon.def9a2a4.pipes;
 
-import com.example.copperpipes.config.DisplayConfig;
+import anon.def9a2a4.pipes.config.DisplayConfig;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;

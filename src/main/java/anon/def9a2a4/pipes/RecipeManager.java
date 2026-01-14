@@ -1,4 +1,4 @@
-package com.example.copperpipes;
+package anon.def9a2a4.pipes;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
@@ -21,13 +21,13 @@ import java.util.Map;
  */
 public class RecipeManager {
 
-    private final CopperPipesPlugin plugin;
+    private final PipesPlugin plugin;
     private final List<NamespacedKey> registeredRecipeKeys = new ArrayList<>();
     private final List<ConversionRecipeDefinition> conversionRecipes = new ArrayList<>();
     // Maps recipe key to the catalyst material that should remain after crafting
     private final Map<NamespacedKey, Material> conversionRecipeCatalysts = new HashMap<>();
 
-    public RecipeManager(CopperPipesPlugin plugin) {
+    public RecipeManager(PipesPlugin plugin) {
         this.plugin = plugin;
     }
 

@@ -1,181 +1,56 @@
+# Pipes
 
-# Copper Pipes
+A Minecraft Paper plugin that adds pipes for transferring items between containers.
 
-A Minecraft Paper plugin that adds copper pipes for transferring items between containers.
+<!-- [Download on Modrinth](https://modrinth.com/plugin/pipes) -->
 
-## Overview
+![](docs/assets/demo-1.png)
 
-Copper Pipes creates an item transport system using custom player head blocks with ItemDisplay entities for visual representation. Pipes can be chained together to move items from one container to another automatically.
+# Features
 
-## File Structure
+Pipes transfer items from a container to other containers, or spit them out like a dropper.
 
-```
-copper_pipes/
-├── src/main/java/com/example/copperpipes/
-│   ├── CopperPipesPlugin.java  - Main plugin class, recipe registration, item creation
-│   ├── PipeManager.java        - Core pipe logic, item transfer, display entities
-│   ├── PipeListener.java       - Event handlers for placement/breaking/chunks
-│   ├── PipeTags.java           - Scoreboard tag encoding for persistence
-│   └── PipeType.java           - Enum defining REGULAR and CORNER pipe types
-├── src/main/resources/
-│   ├── plugin.yml              - Plugin metadata
-│   ├── config.yml              - User configuration options
-│   └── display.yml             - Internal display/texture settings (not user-editable)
-└── docs/assets/                - Texture images
-```
+**Regular Pipes** pull items from the container behind them and push items forward. They face away from the block you place them against.
 
-### Class Responsibilities
+**Corner Pipes** only relay items - they don't pull. Use them to change the direction of item flow. They face toward the block you place them against.
 
-**CopperPipesPlugin.java**
-- Plugin initialization and shutdown
-- Crafting recipe registration for both pipe types
-- Item creation with custom textures
-- `/copperpipes reload` command handling
-- Configuration loading
+Pipes can be chained together to create complex item transport networks.
 
-**PipeManager.java**
-- Tracks all active pipes via `Map<Location, PipeData>`
-- Handles item transfer between containers
-- Spawns and manages ItemDisplay entities
-- Calculates 3D transformations for pipe visuals
-- Scans for existing pipes on server start
-- Runs scheduled transfer and debug particle tasks
+Pipes come in different material variants (oxidized copper, copper, iron, gold) that affect transfer speed and visual appearance. Textures, variants, crafting recipes, and transfer settings are all configurable.
 
-**PipeListener.java**
-- `BlockPlaceEvent` - Creates pipe with correct orientation and display entity
-- `BlockBreakEvent` - Removes pipe and cleans up display entity
-- `ChunkLoadEvent` - Restores pipes when chunks load
-- `ChunkUnloadEvent` - Unloads pipes from memory
+![](docs/assets/demo-2.png)
 
-**PipeTags.java**
-- Encodes pipe data in scoreboard tags: `copper_pipe:{x}_{y}_{z}_{facing}_{type}`
-- Enables pipe persistence across server restarts
+## Crafting
 
-**PipeType.java**
-- Defines `REGULAR` and `CORNER` pipe types
-- Each type has different placement and transfer behavior
+|                     Regular Pipe                      |                         Corner Pipe                         |
+| :---------------------------------------------------: | :---------------------------------------------------------: |
+| ![Regular Pipe Recipe](docs/assets/crafting_pipe.png) | ![Corner Pipe Recipe](docs/assets/crafting_corner_pipe.png) |
 
-## How It Works
+Other pipe variants are crafted with their respective ingots. Oxidized copper pipes are made by throwing regular copper pipes into water cauldrons, or by crafting with a water bucket. Recipes are fully configurable.
 
-### Pipe Types
 
-**Regular Pipes**
-- Pull items from the source container behind them
-- Face **away** from the block they were placed against
+## Commands
 
-**Corner Pipes**
-- Never pull items - only relay items pushed into them
-- Face **toward** the block they were placed against
-- Cannot be placed on ceilings (DOWN-facing is blocked)
-
-### Crafting Recipes
-
-**Regular Pipe:**
-```
-[Copper Ingot] [Copper Ingot] [Copper Ingot]
-[    Empty   ] [    Empty   ] [    Empty   ]
-[Copper Ingot] [Copper Ingot] [Copper Ingot]
-```
-Produces 1 Copper Pipe.
-
-**Corner Pipe:**
-```
-[Copper Ingot] [Copper Ingot] [Copper Ingot]
-[    Empty   ] [    Empty   ] [Copper Ingot]
-[Copper Ingot] [Copper Ingot] [Copper Ingot]
-```
-Or mirrored horizontally. Produces 1 Corner Pipe.
-
-### Placement
-
-1. Place the pipe item on a block
-2. Regular pipes face **away** from the clicked block; corner pipes face **toward** it
-3. A player head block is created with the appropriate texture
-4. An ItemDisplay entity spawns for the extended visual
-
-### Item Transfer
-
-Pipes run on a scheduled task (default: every 10 ticks / 0.5 seconds):
-
-1. **Regular pipes only:** Check the block opposite the pipe's facing direction (the source)
-2. If it's a container with items, extract items (default: 1 per transfer)
-3. Follow the pipe's facing direction to find a destination:
-   - If another pipe, push items into that pipe
-   - If a container, deposit items there
-   - If no valid destination, drop items on the ground
-
-**Corner pipes** do not pull items - they only relay items that are pushed into them by other pipes.
-
-**Supported containers:** Any block implementing the Container interface, including chests, trapped chests, hoppers, droppers, dispensers, barrels, shulker boxes, and modded containers.
-
-### Display Entities
-
-Each pipe has an ItemDisplay entity that:
-- Scales along the facing direction based on adjacent blocks
-- Rotates to match the pipe's orientation
-- Adjusts position based on neighboring containers and pipes
+| Command                 | Description                       | Permission         |
+| ----------------------- | --------------------------------- | ------------------ |
+| `/pipes give <variant>` | Give a pipe item                  | `pipes.give`       |
+| `/pipes reload`         | Reload configuration              | `pipes.reload`     |
+| `/pipes recipes`        | Unlock all pipe recipes           | `pipes.recipes`    |
+| `/pipes info`           | Info about currently loaded pipes | `pipes.info`       |
+| `/pipes delete_all`     | Delete all pipes **(dangerous)**  | `pipes.delete_all` |
+| `/pipes cleanup`        | (debug) Remove orphaned entities  | `pipes.cleanup`    |
 
 ## Configuration
 
-Located in `config.yml`:
+The plugin is configured via `config.yml`. Each pipe variant can have custom settings:
 
 ```yaml
-pipe:
-  # Display name (supports MiniMessage format)
-  name: "<gold>Copper Pipe"
-
-  transfer:
-    # Ticks between transfers (20 ticks = 1 second)
-    interval-ticks: 10
-    # Items moved per operation
-    items-per-transfer: 1
-
-corner-pipe:
-  name: "<gold>Corner Pipe"
-
-debug:
-  # Show debug particles on pipes
-  particles: false
-  # Particle spawn interval in ticks
-  particle-interval: 10
+variants:
+  copper_pipe:
+    behavior: REGULAR
+    display-name: "Copper Pipe"
+    texture-set: copper
+    transfer:
+      interval-ticks: 10    # Transfer every 0.5 seconds
+      items-per-transfer: 1 # Move 1 item at a time
 ```
-
-Display settings (textures, scaling, offsets) are stored internally in `display.yml` and are not intended for user modification.
-
-## Commands & Permissions
-
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `/copperpipes reload` | Reloads configuration and restarts tasks |
-
-### Permissions
-
-| Permission | Description | Default |
-|------------|-------------|---------|
-| `copperpipes.admin` | Access to all commands | op |
-| `copperpipes.reload` | Reload configuration | op |
-
-## Persistence
-
-Pipes persist across server restarts via:
-1. The player head block remains in the world
-2. The ItemDisplay entity has a scoreboard tag encoding location, facing, and type
-3. On chunk load, the plugin scans for these entities and re-registers pipes
-
-# TODO:
-
-- fix velocity offset from downward pipes
-- "valve" pipe to enable/disable flow
-- figure out behavior for pistons pushing pipes?
-
-## maybe
-
-- dispenser pipes
-- warp pipes
-  - green mario texture, crafted with ender pearls? teleports entities
-- dyed pipes?
-- filter pipes?
-- glass window pipes
-  - show items inside the pipe (would add a delay?)

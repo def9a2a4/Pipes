@@ -1,4 +1,4 @@
-package com.example.copperpipes;
+package anon.def9a2a4.pipes;
 
 import org.bukkit.Keyed;
 import org.bukkit.Material;
@@ -18,10 +18,10 @@ import org.bukkit.inventory.Recipe;
  */
 public class ConversionRecipeCraftListener implements Listener {
 
-    private final CopperPipesPlugin plugin;
+    private final PipesPlugin plugin;
     private final RecipeManager recipeManager;
 
-    public ConversionRecipeCraftListener(CopperPipesPlugin plugin, RecipeManager recipeManager) {
+    public ConversionRecipeCraftListener(PipesPlugin plugin, RecipeManager recipeManager) {
         this.plugin = plugin;
         this.recipeManager = recipeManager;
     }

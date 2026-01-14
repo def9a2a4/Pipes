@@ -1,4 +1,4 @@
-package com.example.copperpipes;
+package anon.def9a2a4.pipes;
 
 import net.kyori.adventure.text.Component;
 import org.bukkit.NamespacedKey;

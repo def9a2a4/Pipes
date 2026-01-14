@@ -1,4 +1,4 @@
-package com.example.copperpipes;
+package anon.def9a2a4.pipes;
 
 import com.destroystokyo.paper.profile.PlayerProfile;
 import com.destroystokyo.paper.profile.ProfileProperty;
@@ -20,8 +20,8 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 
-import com.example.copperpipes.config.DisplayConfig;
-import com.example.copperpipes.config.PipeConfig;
+import anon.def9a2a4.pipes.config.DisplayConfig;
+import anon.def9a2a4.pipes.config.PipeConfig;
 
 import java.io.File;
 import java.io.InputStream;
@@ -35,8 +35,9 @@ import java.util.UUID;
 import java.util.stream.Stream;
 
 import org.bukkit.entity.Player;
+import org.bstats.bukkit.Metrics;
 
-public class CopperPipesPlugin extends JavaPlugin {
+public class PipesPlugin extends JavaPlugin {
 
     private static final UUID PIPE_PROFILE_UUID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
@@ -58,6 +59,9 @@ public class CopperPipesPlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        int pluginId = 28844;
+        new Metrics(this, pluginId);
+
         variantRegistry = new VariantRegistry(this);
         loadConfigs();
 
@@ -86,7 +90,7 @@ public class CopperPipesPlugin extends JavaPlugin {
 
         pipeManager.startTasks();
 
-        getLogger().info("CopperPipes enabled!");
+        getLogger().info("Pipes enabled!");
     }
 
     @Override
@@ -94,14 +98,14 @@ public class CopperPipesPlugin extends JavaPlugin {
         if (pipeManager != null) {
             pipeManager.shutdown();
         }
-        getLogger().info("CopperPipes disabled!");
+        getLogger().info("Pipes disabled!");
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (command.getName().equalsIgnoreCase("copperpipes")) {
+        if (command.getName().equalsIgnoreCase("pipes")) {
             if (args.length > 0 && args[0].equalsIgnoreCase("reload")) {
-                if (!sender.hasPermission("copperpipes.reload")) {
+                if (!sender.hasPermission("pipes.reload")) {
                     sender.sendMessage(Component.text("You don't have permission to reload the config.")
                             .color(NamedTextColor.RED));
                     return true;
@@ -122,13 +126,13 @@ public class CopperPipesPlugin extends JavaPlugin {
                 // Reload cauldron conversions
                 cauldronConversionListener.loadConversions();
 
-                sender.sendMessage(Component.text("CopperPipes config reloaded!")
+                sender.sendMessage(Component.text("Pipes config reloaded!")
                         .color(NamedTextColor.GREEN));
                 return true;
             }
 
             if (args.length > 0 && args[0].equalsIgnoreCase("recipes")) {
-                if (!sender.hasPermission("copperpipes.recipes")) {
+                if (!sender.hasPermission("pipes.recipes")) {
                     sender.sendMessage(Component.text("You don't have permission to unlock recipes.")
                             .color(NamedTextColor.RED));
                     return true;
@@ -141,13 +145,13 @@ public class CopperPipesPlugin extends JavaPlugin {
                 }
 
                 recipeManager.discoverAllRecipes(player);
-                sender.sendMessage(Component.text("Unlocked all CopperPipes recipes!")
+                sender.sendMessage(Component.text("Unlocked all Pipes recipes!")
                         .color(NamedTextColor.GREEN));
                 return true;
             }
 
             if (args.length > 0 && args[0].equalsIgnoreCase("give")) {
-                if (!sender.hasPermission("copperpipes.give")) {
+                if (!sender.hasPermission("pipes.give")) {
                     sender.sendMessage(Component.text("You don't have permission to give items.")
                             .color(NamedTextColor.RED));
                     return true;
@@ -160,7 +164,7 @@ public class CopperPipesPlugin extends JavaPlugin {
                 }
 
                 if (args.length < 2) {
-                    sender.sendMessage(Component.text("Usage: /copperpipes give <item> [amount]")
+                    sender.sendMessage(Component.text("Usage: /pipes give <item> [amount]")
                             .color(NamedTextColor.YELLOW));
                     return true;
                 }
@@ -210,7 +214,7 @@ public class CopperPipesPlugin extends JavaPlugin {
             }
 
             if (args.length > 0 && args[0].equalsIgnoreCase("cleanup")) {
-                if (!sender.hasPermission("copperpipes.cleanup")) {
+                if (!sender.hasPermission("pipes.cleanup")) {
                     sender.sendMessage(Component.text("You don't have permission to cleanup orphaned displays.")
                             .color(NamedTextColor.RED));
                     return true;
@@ -237,13 +241,13 @@ public class CopperPipesPlugin extends JavaPlugin {
             }
 
             if (args.length > 0 && args[0].equalsIgnoreCase("info")) {
-                if (!sender.hasPermission("copperpipes.info")) {
+                if (!sender.hasPermission("pipes.info")) {
                     sender.sendMessage(Component.text("You don't have permission to view pipe info.")
                             .color(NamedTextColor.RED));
                     return true;
                 }
 
-                sender.sendMessage(Component.text("=== CopperPipes Info ===")
+                sender.sendMessage(Component.text("=== Pipes Info ===")
                         .color(NamedTextColor.GOLD));
 
                 // Pipe counts by variant
@@ -284,7 +288,7 @@ public class CopperPipesPlugin extends JavaPlugin {
             }
 
             if (args.length > 0 && args[0].equalsIgnoreCase("delete_all")) {
-                if (!sender.hasPermission("copperpipes.delete_all")) {
+                if (!sender.hasPermission("pipes.delete_all")) {
                     sender.sendMessage(Component.text("You don't have permission to delete all pipes.")
                             .color(NamedTextColor.RED));
                     return true;
@@ -310,7 +314,7 @@ public class CopperPipesPlugin extends JavaPlugin {
                 return true;
             }
 
-            sender.sendMessage(Component.text("Usage: /copperpipes <reload|give|recipes|cleanup|info|delete_all>")
+            sender.sendMessage(Component.text("Usage: /pipes <reload|give|recipes|cleanup|info|delete_all>")
                     .color(NamedTextColor.YELLOW));
             return true;
         }
@@ -319,7 +323,7 @@ public class CopperPipesPlugin extends JavaPlugin {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (!command.getName().equalsIgnoreCase("copperpipes")) {
+        if (!command.getName().equalsIgnoreCase("pipes")) {
             return List.of();
         }
 

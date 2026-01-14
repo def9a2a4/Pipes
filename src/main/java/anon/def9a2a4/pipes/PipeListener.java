@@ -45,6 +45,10 @@ public class PipeListener implements Listener {
 
     /**
      * Handle pipe removal with optional item drop.
+     *
+     * Compatible with HeadSmith plugin: uses location-based registry lookup
+     * (not texture-based), so non-pipe custom heads are ignored.
+     *
      * @param block The pipe block being removed
      * @param shouldDrop Whether to drop the pipe item
      * @return true if this was a registered pipe (cleanup performed)

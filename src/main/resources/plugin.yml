@@ -8,7 +8,7 @@ description: Item pipes for transferring items between containers
 commands:
   pipes:
     description: Pipes admin commands
-    usage: /pipes <reload|give|recipes|cleanup|info|delete_all>
+    usage: /pipes <help|reload|give|recipes|cleanup|info|delete_all>
     permission: pipes.admin
 
 permissions:

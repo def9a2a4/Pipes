@@ -104,7 +104,12 @@ public class PipesPlugin extends JavaPlugin {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (command.getName().equalsIgnoreCase("pipes")) {
-            if (args.length > 0 && args[0].equalsIgnoreCase("reload")) {
+            if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
+                sendHelp(sender);
+                return true;
+            }
+
+            if (args[0].equalsIgnoreCase("reload")) {
                 if (!sender.hasPermission("pipes.reload")) {
                     sender.sendMessage(Component.text("You don't have permission to reload the config.")
                             .color(NamedTextColor.RED));
@@ -131,7 +136,7 @@ public class PipesPlugin extends JavaPlugin {
                 return true;
             }
 
-            if (args.length > 0 && args[0].equalsIgnoreCase("recipes")) {
+            if (args[0].equalsIgnoreCase("recipes")) {
                 if (!sender.hasPermission("pipes.recipes")) {
                     sender.sendMessage(Component.text("You don't have permission to unlock recipes.")
                             .color(NamedTextColor.RED));
@@ -150,7 +155,7 @@ public class PipesPlugin extends JavaPlugin {
                 return true;
             }
 
-            if (args.length > 0 && args[0].equalsIgnoreCase("give")) {
+            if (args[0].equalsIgnoreCase("give")) {
                 if (!sender.hasPermission("pipes.give")) {
                     sender.sendMessage(Component.text("You don't have permission to give items.")
                             .color(NamedTextColor.RED));
@@ -213,7 +218,7 @@ public class PipesPlugin extends JavaPlugin {
                 return true;
             }
 
-            if (args.length > 0 && args[0].equalsIgnoreCase("cleanup")) {
+            if (args[0].equalsIgnoreCase("cleanup")) {
                 if (!sender.hasPermission("pipes.cleanup")) {
                     sender.sendMessage(Component.text("You don't have permission to cleanup orphaned displays.")
                             .color(NamedTextColor.RED));
@@ -240,7 +245,7 @@ public class PipesPlugin extends JavaPlugin {
                 return true;
             }
 
-            if (args.length > 0 && args[0].equalsIgnoreCase("info")) {
+            if (args[0].equalsIgnoreCase("info")) {
                 if (!sender.hasPermission("pipes.info")) {
                     sender.sendMessage(Component.text("You don't have permission to view pipe info.")
                             .color(NamedTextColor.RED));
@@ -287,7 +292,7 @@ public class PipesPlugin extends JavaPlugin {
                 return true;
             }
 
-            if (args.length > 0 && args[0].equalsIgnoreCase("delete_all")) {
+            if (args[0].equalsIgnoreCase("delete_all")) {
                 if (!sender.hasPermission("pipes.delete_all")) {
                     sender.sendMessage(Component.text("You don't have permission to delete all pipes.")
                             .color(NamedTextColor.RED));
@@ -314,8 +319,8 @@ public class PipesPlugin extends JavaPlugin {
                 return true;
             }
 
-            sender.sendMessage(Component.text("Usage: /pipes <reload|give|recipes|cleanup|info|delete_all>")
-                    .color(NamedTextColor.YELLOW));
+            // Unknown subcommand - show help
+            sendHelp(sender);
             return true;
         }
         return false;
@@ -328,7 +333,7 @@ public class PipesPlugin extends JavaPlugin {
         }
 
         if (args.length == 1) {
-            return Stream.of("reload", "give", "recipes", "cleanup", "info", "delete_all")
+            return Stream.of("help", "reload", "give", "recipes", "cleanup", "info", "delete_all")
                     .filter(s -> s.toLowerCase().startsWith(args[0].toLowerCase()))
                     .toList();
         }
@@ -352,6 +357,38 @@ public class PipesPlugin extends JavaPlugin {
         }
 
         return List.of();
+    }
+
+    private void sendHelp(CommandSender sender) {
+        sender.sendMessage(Component.text("=== Pipes Commands ===").color(NamedTextColor.GOLD));
+
+        sender.sendMessage(Component.text("/pipes help").color(NamedTextColor.WHITE)
+                .append(Component.text(" - Show this help message").color(NamedTextColor.GRAY)));
+
+        if (sender.hasPermission("pipes.reload")) {
+            sender.sendMessage(Component.text("/pipes reload").color(NamedTextColor.WHITE)
+                    .append(Component.text(" - Reload configuration").color(NamedTextColor.GRAY)));
+        }
+        if (sender.hasPermission("pipes.give")) {
+            sender.sendMessage(Component.text("/pipes give <item> [amount]").color(NamedTextColor.WHITE)
+                    .append(Component.text(" - Give pipe items").color(NamedTextColor.GRAY)));
+        }
+        if (sender.hasPermission("pipes.recipes")) {
+            sender.sendMessage(Component.text("/pipes recipes").color(NamedTextColor.WHITE)
+                    .append(Component.text(" - Unlock all pipe recipes").color(NamedTextColor.GRAY)));
+        }
+        if (sender.hasPermission("pipes.cleanup")) {
+            sender.sendMessage(Component.text("/pipes cleanup").color(NamedTextColor.WHITE)
+                    .append(Component.text(" - Remove orphaned display entities").color(NamedTextColor.GRAY)));
+        }
+        if (sender.hasPermission("pipes.info")) {
+            sender.sendMessage(Component.text("/pipes info").color(NamedTextColor.WHITE)
+                    .append(Component.text(" - View pipe statistics").color(NamedTextColor.GRAY)));
+        }
+        if (sender.hasPermission("pipes.delete_all")) {
+            sender.sendMessage(Component.text("/pipes delete_all").color(NamedTextColor.WHITE)
+                    .append(Component.text(" - Delete all pipes (dangerous!)").color(NamedTextColor.GRAY)));
+        }
     }
 
     private void loadConfigs() {

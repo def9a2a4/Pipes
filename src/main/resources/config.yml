@@ -49,7 +49,7 @@ variants:
         ingredients:
           C: COPPER_INGOT
           R: REDSTONE
-        result-amount: 1
+        result-amount: 4
 
   # Corner Pipe - only relays items, doesn't pull from containers
   copper_corner_pipe:
@@ -71,7 +71,7 @@ variants:
         ingredients:
           C: COPPER_INGOT
           R: REDSTONE
-        result-amount: 1
+        result-amount: 4
       - shape:
           - "CCC"
           - "CR "
@@ -79,7 +79,7 @@ variants:
         ingredients:
           C: COPPER_INGOT
           R: REDSTONE
-        result-amount: 1
+        result-amount: 4
 
   # Iron Pipe - standard pipe that pulls items from containers
   iron_pipe:

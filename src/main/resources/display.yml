@@ -154,6 +154,17 @@ corner-pipe:
       side: 0.0
       up: 0.32
       down: -0.18
+    # Vertical translation for the corner body display entity.
+    body-vertical-offset:
+      side: 0.275
+      up: 0.275
+      down: -0.25
+    # Vertical translation for the simulated corner head display entity.
+    # Currently only down is used because up/side use the actual head block.
+    head-vertical-offset:
+      side: 0.5
+      up: 0.5
+      down: -0.005
   # Destination adjustments for corner pipe directional display
   adjustments:
     destination:

@@ -756,14 +756,11 @@ public class PipeManager {
     private Transformation calculateCornerTransformation(BlockFace facing) {
         DisplayConfig display = plugin.getDisplayConfig();
         float scale = (float) display.getCornerScale();
-        float height = (float) display.getCornerHeight();
 
-        float verticalOffset = height - 0.5f;
-        Vector3f translation = facing == BlockFace.DOWN
-                ? buildTranslation(facing, 0.25f, 0, 0)
-                : new Vector3f(0, verticalOffset, 0);
+        String direction = getDirectionKey(facing, false);
+        Vector3f translation = new Vector3f(0, (float) display.getCornerBodyVerticalOffset(direction), 0);
         Vector3f scaleVec = new Vector3f(scale, scale, scale);
-        AxisAngle4f rotation = buildCornerBodyRotation(facing);
+        AxisAngle4f rotation = buildCornerVerticalRotation(facing);
 
         return new Transformation(
                 translation,
@@ -790,20 +787,17 @@ public class PipeManager {
         });
     }
 
-    private AxisAngle4f buildCornerBodyRotation(BlockFace facing) {
+    private AxisAngle4f buildCornerVerticalRotation(BlockFace facing) {
         return facing == BlockFace.DOWN
                 ? new AxisAngle4f((float) Math.PI, 1, 0, 0)
                 : new AxisAngle4f(0, 0, 1, 0);
     }
 
     private Transformation calculateCornerHeadTransformation(BlockFace facing) {
-        AxisAngle4f rotation = facing == BlockFace.DOWN
-                ? new AxisAngle4f((float) Math.PI, 1, 0, 0)
-                : new AxisAngle4f(0, 0, 1, 0);
         DisplayConfig display = plugin.getDisplayConfig();
-        Vector3f translation = facing == BlockFace.DOWN
-                ? new Vector3f(0, (float) display.getCornerHeight() - 0.78f, 0)
-                : buildTranslation(facing, 0.5f, 0, 0);
+        String direction = getDirectionKey(facing, false);
+        AxisAngle4f rotation = buildCornerVerticalRotation(facing);
+        Vector3f translation = new Vector3f(0, (float) display.getCornerHeadVerticalOffset(direction), 0);
         return new Transformation(
                 translation,
                 rotation,

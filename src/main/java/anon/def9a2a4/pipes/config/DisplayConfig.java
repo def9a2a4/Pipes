@@ -26,6 +26,8 @@ public class DisplayConfig {
     private final double cornerScale;
     private final double cornerHeight;
     private final DirectionalAdjustment cornerDirectionalForwardOffsets;
+    private final DirectionalAdjustment cornerBodyVerticalOffsets;
+    private final DirectionalAdjustment cornerHeadVerticalOffsets;
 
     // Adjustment maps for source and destination
     private final Map<String, DirectionalAdjustment> sourceAdjustments;
@@ -63,6 +65,17 @@ public class DisplayConfig {
                 config.getDouble("corner-pipe.display.directional-forward-offset.side", 0.0),
                 config.getDouble("corner-pipe.display.directional-forward-offset.up", 0.0),
                 config.getDouble("corner-pipe.display.directional-forward-offset.down", 0.0)
+        );
+        double defaultBodyVerticalOffset = this.cornerHeight - 0.5;
+        this.cornerBodyVerticalOffsets = new DirectionalAdjustment(
+                config.getDouble("corner-pipe.display.body-vertical-offset.side", defaultBodyVerticalOffset),
+                config.getDouble("corner-pipe.display.body-vertical-offset.up", defaultBodyVerticalOffset),
+                config.getDouble("corner-pipe.display.body-vertical-offset.down", -0.25)
+        );
+        this.cornerHeadVerticalOffsets = new DirectionalAdjustment(
+                config.getDouble("corner-pipe.display.head-vertical-offset.side", 0.5),
+                config.getDouble("corner-pipe.display.head-vertical-offset.up", 0.5),
+                config.getDouble("corner-pipe.display.head-vertical-offset.down", this.cornerHeight - 0.78)
         );
 
         // Load adjustment maps
@@ -207,6 +220,14 @@ public class DisplayConfig {
 
     public double getCornerDirectionalForwardOffset(String direction) {
         return cornerDirectionalForwardOffsets.get(direction);
+    }
+
+    public double getCornerBodyVerticalOffset(String direction) {
+        return cornerBodyVerticalOffsets.get(direction);
+    }
+
+    public double getCornerHeadVerticalOffset(String direction) {
+        return cornerHeadVerticalOffsets.get(direction);
     }
 
     public double getSourceAdjustment(String category, String direction) {

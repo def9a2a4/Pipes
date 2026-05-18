@@ -16,6 +16,7 @@ public final class PipeTags {
     public static final NamespacedKey PIPE_TAG_KEY = new NamespacedKey("pipe", "tag");
 
     public static final String DIRECTIONAL_SUFFIX = "_dir";
+    public static final String HEAD_DISPLAY_SUFFIX = "_head";
 
     private PipeTags() {}
 
@@ -38,10 +39,24 @@ public final class PipeTags {
     }
 
     /**
+     * Create a tag for an extra head display entity used by down-facing corner pipes.
+     */
+    public static String createHeadDisplayTag(Location location, BlockFace facing, PipeVariant variant) {
+        return createTag(location, facing, variant) + HEAD_DISPLAY_SUFFIX;
+    }
+
+    /**
      * Check if a tag is for a directional display entity.
      */
     public static boolean isDirectionalTag(String tag) {
         return tag != null && tag.endsWith(DIRECTIONAL_SUFFIX);
+    }
+
+    /**
+     * Check if a tag is for a simulated head display entity.
+     */
+    public static boolean isHeadDisplayTag(String tag) {
+        return tag != null && tag.endsWith(HEAD_DISPLAY_SUFFIX);
     }
 
     /**
@@ -72,11 +87,7 @@ public final class PipeTags {
     public static String parseVariantId(String tag) {
         if (tag == null) return null;
 
-        // Strip directional suffix first
-        String workingTag = tag;
-        if (workingTag.endsWith(DIRECTIONAL_SUFFIX)) {
-            workingTag = workingTag.substring(0, workingTag.length() - DIRECTIONAL_SUFFIX.length());
-        }
+        String workingTag = stripDisplaySuffix(tag);
 
         // Format: {variant_id}:{data}
         int colonIdx = workingTag.indexOf(':');
@@ -93,11 +104,7 @@ public final class PipeTags {
     private static String getTagData(String tag) {
         if (tag == null) return null;
 
-        // Strip directional suffix first
-        String workingTag = tag;
-        if (workingTag.endsWith(DIRECTIONAL_SUFFIX)) {
-            workingTag = workingTag.substring(0, workingTag.length() - DIRECTIONAL_SUFFIX.length());
-        }
+        String workingTag = stripDisplaySuffix(tag);
 
         // Format: {variant_id}:{data}
         int colonIdx = workingTag.indexOf(':');
@@ -157,5 +164,16 @@ public final class PipeTags {
         return parsed.getBlockX() == location.getBlockX() &&
                 parsed.getBlockY() == location.getBlockY() &&
                 parsed.getBlockZ() == location.getBlockZ();
+    }
+
+    private static String stripDisplaySuffix(String tag) {
+        if (tag == null) return null;
+        if (tag.endsWith(DIRECTIONAL_SUFFIX)) {
+            return tag.substring(0, tag.length() - DIRECTIONAL_SUFFIX.length());
+        }
+        if (tag.endsWith(HEAD_DISPLAY_SUFFIX)) {
+            return tag.substring(0, tag.length() - HEAD_DISPLAY_SUFFIX.length());
+        }
+        return tag;
     }
 }

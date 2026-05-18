@@ -128,6 +128,7 @@ public class PipesPlugin extends JavaPlugin {
                 loadItems();
 //                recipeManager.registerRecipes();
                 for (PipeManager manager : pipeManager.values()) {
+                    manager.refreshAllDisplays();
                     manager.restartTasks();
                 }
 
@@ -498,9 +499,7 @@ public class PipesPlugin extends JavaPlugin {
         // Head block textures
         Map<BlockFace, ItemStack> heads = new HashMap<>();
         heads.put(BlockFace.NORTH, createPipeItem(variant, textures.getHeadTexture(BlockFace.NORTH)));
-        if (variant.getBehaviorType() == BehaviorType.REGULAR) {
-            heads.put(BlockFace.UP, createPipeItem(variant, textures.getHeadTexture(BlockFace.UP)));
-        }
+        heads.put(BlockFace.UP, createPipeItem(variant, textures.getHeadTexture(BlockFace.UP)));
         heads.put(BlockFace.DOWN, createPipeItem(variant, textures.getHeadTexture(BlockFace.DOWN)));
         headItems.put(variantId, heads);
 
@@ -511,6 +510,7 @@ public class PipesPlugin extends JavaPlugin {
             // Load directional display items for corner pipes
             Map<BlockFace, ItemStack> directionalDisplays = new HashMap<>();
             directionalDisplays.put(BlockFace.NORTH, createPipeItem(variant, textures.getDirectionalDisplayTexture(BlockFace.NORTH)));
+            directionalDisplays.put(BlockFace.UP, createPipeItem(variant, textures.getDirectionalDisplayTexture(BlockFace.UP)));
             directionalDisplays.put(BlockFace.DOWN, createPipeItem(variant, textures.getDirectionalDisplayTexture(BlockFace.DOWN)));
             directionalDisplayItems.put(variantId, directionalDisplays);
         } else {
@@ -600,6 +600,10 @@ public class PipesPlugin extends JavaPlugin {
         Map<BlockFace, ItemStack> displays = directionalDisplayItems.get(variant.getId());
         if (displays == null) return null;
 
+        if (facing == BlockFace.UP) {
+            ItemStack item = displays.get(BlockFace.UP);
+            return item != null ? item : displays.get(BlockFace.NORTH);
+        }
         if (facing == BlockFace.DOWN) {
             ItemStack item = displays.get(BlockFace.DOWN);
             return item != null ? item : displays.get(BlockFace.NORTH);

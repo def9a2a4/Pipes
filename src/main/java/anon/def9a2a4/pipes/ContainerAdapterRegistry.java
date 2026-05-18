@@ -4,11 +4,15 @@ import anon.def9a2a4.pipes.adapter.ContainerAdapter;
 import anon.def9a2a4.pipes.adapter.BrewingStandContainerAdapter;
 import anon.def9a2a4.pipes.adapter.FurnaceContainerAdapter;
 import anon.def9a2a4.pipes.adapter.VanillaContainerAdapter;
+import org.bukkit.Material;
 import org.bukkit.block.Block;
+import org.bukkit.block.Container;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 管道容器适配器注册表。
@@ -28,6 +32,8 @@ public final class ContainerAdapterRegistry {
             new BrewingStandContainerAdapter(),
             new VanillaContainerAdapter()
     );
+
+    private static final Set<Material> VANILLA_CONTAINER_MATERIALS = createVanillaContainerMaterials();
 
     /** 已注册的自定义适配器列表（越早注册优先级越高）。 */
     private static final List<ContainerAdapter> adapters = new ArrayList<>();
@@ -70,11 +76,25 @@ public final class ContainerAdapterRegistry {
                 return Optional.of(adapter);
             }
         }
+        if (!VANILLA_CONTAINER_MATERIALS.contains(block.getType())) {
+            return Optional.empty();
+        }
         for (ContainerAdapter adapter : VANILLA) {
             if (adapter.canHandle(block)) {
                 return Optional.of(adapter);
             }
         }
         return Optional.empty();
+    }
+
+    private static Set<Material> createVanillaContainerMaterials() {
+        EnumSet<Material> materials = EnumSet.noneOf(Material.class);
+        for (Material material : Material.values()) {
+            if (!material.isBlock()) continue;
+            if (material.createBlockData().createBlockState() instanceof Container) {
+                materials.add(material);
+            }
+        }
+        return materials;
     }
 }

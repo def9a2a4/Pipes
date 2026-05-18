@@ -25,7 +25,7 @@ public class DisplayConfig {
     // Corner pipe display settings
     private final double cornerScale;
     private final double cornerHeight;
-    private final double cornerDirectionalForwardOffset;
+    private final DirectionalAdjustment cornerDirectionalForwardOffsets;
 
     // Adjustment maps for source and destination
     private final Map<String, DirectionalAdjustment> sourceAdjustments;
@@ -59,7 +59,11 @@ public class DisplayConfig {
         // Corner pipe display
         this.cornerScale = config.getDouble("corner-pipe.display.scale", 1.1);
         this.cornerHeight = config.getDouble("corner-pipe.display.height", 0.775);
-        this.cornerDirectionalForwardOffset = config.getDouble("corner-pipe.display.directional-forward-offset", 0.0);
+        this.cornerDirectionalForwardOffsets = new DirectionalAdjustment(
+                config.getDouble("corner-pipe.display.directional-forward-offset.side", 0.0),
+                config.getDouble("corner-pipe.display.directional-forward-offset.up", 0.0),
+                config.getDouble("corner-pipe.display.directional-forward-offset.down", 0.0)
+        );
 
         // Load adjustment maps
         this.sourceAdjustments = loadAdjustments(config, "adjustments.source");
@@ -127,6 +131,9 @@ public class DisplayConfig {
             if (directionalSection != null) {
                 String horizontal = directionalSection.getString("horizontal");
                 if (horizontal != null) directionalDisplayTextures.put(BlockFace.NORTH, horizontal);
+
+                String up = directionalSection.getString("up");
+                if (up != null) directionalDisplayTextures.put(BlockFace.UP, up);
 
                 String down = directionalSection.getString("down");
                 if (down != null) directionalDisplayTextures.put(BlockFace.DOWN, down);
@@ -198,8 +205,8 @@ public class DisplayConfig {
         return cornerHeight;
     }
 
-    public double getCornerDirectionalForwardOffset() {
-        return cornerDirectionalForwardOffset;
+    public double getCornerDirectionalForwardOffset(String direction) {
+        return cornerDirectionalForwardOffsets.get(direction);
     }
 
     public double getSourceAdjustment(String category, String direction) {
@@ -282,6 +289,10 @@ public class DisplayConfig {
          * Falls back to item display texture if not specified.
          */
         public String getDirectionalDisplayTexture(BlockFace facing) {
+            if (facing == BlockFace.UP) {
+                String texture = directionalDisplay.get(BlockFace.UP);
+                if (texture != null) return texture;
+            }
             if (facing == BlockFace.DOWN) {
                 String texture = directionalDisplay.get(BlockFace.DOWN);
                 if (texture != null) return texture;

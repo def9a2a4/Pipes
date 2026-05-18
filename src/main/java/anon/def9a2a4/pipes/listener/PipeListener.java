@@ -117,16 +117,6 @@ public class PipeListener implements Listener {
                 facing = getPlayerFacing(event.getPlayer().getLocation().getYaw());
             }
 
-            // Corner pipes face TOWARD the clicked surface (they push TO that face)
-            // Block ceiling placement (clickedFace DOWN -> would face UP after inversion)
-            if (variant.getBehaviorType() == BehaviorType.CORNER) {
-                if (facing == BlockFace.DOWN) {
-                    event.setCancelled(true);
-                    return;
-                }
-                facing = facing.getOppositeFace();
-            }
-
             // For vertical pipes: ensure correct block type and locked rotation
             if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
                 // Force PLAYER_HEAD for down-facing pipes (Minecraft sometimes places PLAYER_WALL_HEAD)

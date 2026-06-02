@@ -5,6 +5,10 @@ api-version: 1.21
 author: You
 description: Item pipes for transferring items between containers
 
+depend:
+  - CarbKotlin
+  - SlimeCargoNext
+
 commands:
   pipes:
     description: Pipes admin commands

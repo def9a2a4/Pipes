@@ -1,7 +1,15 @@
-package anon.def9a2a4.pipes;
+package anon.def9a2a4.pipes.listener;
 
+import anon.def9a2a4.pipes.BehaviorType;
+import anon.def9a2a4.pipes.PipeManager;
+import anon.def9a2a4.pipes.PipeManager.PipeData;
+import anon.def9a2a4.pipes.PipeVariant;
+import anon.def9a2a4.pipes.PipesPlugin;
+import com.destroystokyo.paper.event.block.BlockDestroyEvent;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.Skull;
@@ -9,36 +17,24 @@ import org.bukkit.entity.ItemDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
-import org.bukkit.event.block.BlockBreakEvent;
-import org.bukkit.event.block.BlockBurnEvent;
-import org.bukkit.event.block.BlockExplodeEvent;
-import org.bukkit.event.block.BlockPistonExtendEvent;
-import org.bukkit.event.block.BlockPistonRetractEvent;
-import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.*;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.event.world.ChunkUnloadEvent;
-import org.bukkit.Location;
-import anon.def9a2a4.pipes.PipeManager.PipeData;
-import com.destroystokyo.paper.event.block.BlockDestroyEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.util.Vector;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Random;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class PipeListener implements Listener {
 
     private final PipesPlugin plugin;
-    private final PipeManager pipeManager;
+    private final WeakHashMap<World, PipeManager> pipeManager;
     private final Random random = new Random();
 
-    public PipeListener(PipesPlugin plugin, PipeManager pipeManager) {
+    public PipeListener(PipesPlugin plugin, WeakHashMap<World, PipeManager> pipeManager) {
         this.plugin = plugin;
         this.pipeManager = pipeManager;
     }
@@ -51,33 +47,50 @@ public class PipeListener implements Listener {
      *
      * @param block The pipe block being removed
      * @param shouldDrop Whether to drop the pipe item
+     * @param naturalDrop Whether the drop has random velocity
      * @return true if this was a registered pipe (cleanup performed)
      */
-    private boolean handlePipeRemoval(Block block, boolean shouldDrop) {
+    private boolean handlePipeRemoval(Block block, boolean shouldDrop, boolean naturalDrop) {
         if (block.getType() != Material.PLAYER_HEAD && block.getType() != Material.PLAYER_WALL_HEAD) {
             return false;
         }
 
-        PipeData pipeData = pipeManager.getPipeData(block.getLocation());
+        PipeManager manager = pipeManager.get(block.getWorld());
+        if (manager == null) {
+            return false;
+        }
+
+        PipeData pipeData = manager.getPipeData(block.getLocation());
         if (pipeData == null) {
             return false;
         }
 
         PipeVariant variant = pipeData.variant();
-        pipeManager.unregisterPipe(block.getLocation());
+        manager.unregisterPipe(block.getLocation());
 
         if (shouldDrop) {
             ItemStack dropItem = plugin.getPipeItem(variant);
             if (dropItem != null) {
-                block.getWorld().dropItem(
-                    block.getLocation().add(0.5, 0.5, 0.5),
-                    dropItem,
-                    item -> item.setVelocity(new Vector(0, 0, 0))
-                );
+                if (naturalDrop) {
+                    block.getWorld().dropItemNaturally(
+                            block.getLocation().add(0.5, 0.5, 0.5),
+                            dropItem
+                    );
+                } else {
+                    block.getWorld().dropItem(
+                            block.getLocation().add(0.5, 0.5, 0.5),
+                            dropItem,
+                            item -> item.setVelocity(new Vector(0, 0, 0))
+                    );
+                }
             }
         }
 
         return true;
+    }
+
+    private boolean handlePipeRemoval(Block block, boolean shouldDrop) {
+        return handlePipeRemoval(block, shouldDrop, false);
     }
 
     /**
@@ -104,16 +117,6 @@ public class PipeListener implements Listener {
                 facing = getPlayerFacing(event.getPlayer().getLocation().getYaw());
             }
 
-            // Corner pipes face TOWARD the clicked surface (they push TO that face)
-            // Block ceiling placement (clickedFace DOWN -> would face UP after inversion)
-            if (variant.getBehaviorType() == BehaviorType.CORNER) {
-                if (facing == BlockFace.DOWN) {
-                    event.setCancelled(true);
-                    return;
-                }
-                facing = facing.getOppositeFace();
-            }
-
             // For vertical pipes: ensure correct block type and locked rotation
             if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
                 // Force PLAYER_HEAD for down-facing pipes (Minecraft sometimes places PLAYER_WALL_HEAD)
@@ -135,12 +138,17 @@ public class PipeListener implements Listener {
                 updatePlacedSkullTexture(loc.getBlock(), variant, finalFacing);
             }, 2L);
 
-            List<ItemDisplay> displays = pipeManager.spawnDisplayEntities(block.getLocation(), facing, variant);
+            PipeManager manager = pipeManager.get(block.getWorld());
+            if (manager == null) {
+                throw new IllegalStateException("PipeManager not found for world: " + block.getWorld().getName());
+            }
+
+            List<ItemDisplay> displays = manager.spawnDisplayEntities(block.getLocation(), facing, variant);
             List<UUID> displayIds = displays.stream()
                     .map(ItemDisplay::getUniqueId)
                     .collect(Collectors.toList());
 
-            pipeManager.registerPipe(
+            manager.registerPipe(
                     block.getLocation(),
                     facing,
                     displayIds,
@@ -193,14 +201,30 @@ public class PipeListener implements Listener {
         BlockFace[] faces = {BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN};
         Block block = blockLocation.getBlock();
 
+        PipeManager manager = pipeManager.get(block.getWorld());
+        if (manager == null) {
+            throw new IllegalStateException("PipeManager not found for world: " + block.getWorld().getName());
+        }
+
         for (BlockFace face : faces) {
             Location adjacentLoc = block.getRelative(face).getLocation();
-            PipeData pipeData = pipeManager.getPipeData(adjacentLoc);
+            PipeData pipeData = manager.getPipeData(adjacentLoc);
             if (pipeData != null) {
                 BlockFace pipeFacing = pipeData.facing();
-                // Update if block is at pipe's source (opposite of facing) or destination (facing direction)
-                if (face == pipeFacing || face == pipeFacing.getOppositeFace()) {
-                    pipeManager.updateDisplayEntity(adjacentLoc);
+                // Regular pipes: update only when the changed block is at source or destination
+                // Corner pipes: update on any adjacent change (side faces are valid secondary outputs)
+                boolean isCorner = pipeData.variant().getBehaviorType() == BehaviorType.CORNER;
+                if (isCorner || face == pipeFacing || face == pipeFacing.getOppositeFace()) {
+                    manager.updateDisplayEntity(adjacentLoc);
+                }
+                // 若变化的方块正好位于该管道的输出方向，立即唤醒管道（避免 end-recheck sleep 延迟响应）
+                if (pipeFacing == face.getOppositeFace()) {
+                    manager.wakeUpPipe(adjacentLoc);
+                    manager.invalidatePath(adjacentLoc);
+                }
+                // 若变化的方块正好位于该管道的输入方向，立即唤醒管道（避免 source-empty sleep 延迟响应）
+                if (pipeFacing == face) {
+                    manager.wakeUpPipe(adjacentLoc);
                 }
             }
         }
@@ -299,16 +323,35 @@ public class PipeListener implements Listener {
         scheduleAdjacentUpdates(block.getLocation());
     }
 
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onBlockFromTo(BlockFromToEvent event) {
+        Block block = event.getToBlock();
+
+        if (handlePipeRemoval(block, true, true)) {
+            event.setCancelled(true);
+            block.setType(Material.AIR);
+            scheduleAdjacentUpdates(block.getLocation());
+        }
+    }
+
     // ========== Chunk Handlers ==========
 
     @EventHandler
     public void onChunkLoad(ChunkLoadEvent event) {
         // Schedule for next tick to ensure entities are fully loaded
-        Bukkit.getScheduler().runTask(plugin, () -> pipeManager.scanChunk(event.getChunk()));
+        PipeManager manager = pipeManager.get(event.getWorld());
+        if (manager == null) {
+            throw new IllegalStateException("PipeManager not found for world: " + event.getWorld().getName());
+        }
+        Bukkit.getScheduler().runTask(plugin, () -> manager.scanChunk(event.getChunk()));
     }
 
     @EventHandler
     public void onChunkUnload(ChunkUnloadEvent event) {
-        pipeManager.unloadPipesInChunk(event.getChunk());
+        PipeManager manager = pipeManager.get(event.getWorld());
+        if (manager == null) {
+            throw new IllegalStateException("PipeManager not found for world: " + event.getWorld().getName());
+        }
+        manager.unloadPipesInChunk(event.getChunk());
     }
 }

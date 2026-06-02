@@ -1,83 +1,100 @@
 package anon.def9a2a4.pipes;
 
-import org.bukkit.Bukkit;
-import org.bukkit.Location;
-import org.bukkit.Material;
-import org.bukkit.Particle;
-import org.bukkit.World;
+import anon.def9a2a4.pipes.adapter.ContainerAdapter;
+import anon.def9a2a4.pipes.config.DisplayConfig;
+import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
-import org.bukkit.block.Container;
+import org.bukkit.block.Skull;
+import org.bukkit.block.data.Directional;
+import org.bukkit.block.data.Rotatable;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.ItemDisplay;
-import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.util.Transformation;
 import org.bukkit.util.Vector;
 import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
 
-import org.bukkit.Chunk;
-
-import anon.def9a2a4.pipes.config.DisplayConfig;
-
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Random;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 
 public class PipeManager {
 
-    private record DestinationResult(Location destination, Location lastPipeLocation, int minItemsPerTransfer) {}
+    private static final int MAX_FALLBACK_DEPTH = 24;
+
+    private record CachedPath(Location destination, Location lastPipeLocation,
+                               List<Location> pipeChain, int minItemsPerTransfer) {}
 
     private final PipesPlugin plugin;
+    private final int offset;
+    private final World world;
+    private final Random random = new Random();
     private final Map<Location, PipeData> pipes = new HashMap<>();
-    private final Map<Location, Long> lastTransferTime = new HashMap<>();
-    private BukkitTask transferTask;
-    private BukkitTask particleTask;
+    private final Map<Location, Long> lastTransferTick = new HashMap<>();
 
-    public PipeManager(PipesPlugin plugin) {
+    private final Map<Location, CachedPath> pathCache = new HashMap<>();
+    private final Set<Location> dirtyPaths = new HashSet<>();
+    private final Map<Location, Long> sleepUntil = new HashMap<>();
+    private final Map<Location, Long> nullDestRecheckUntil = new HashMap<>();
+    private final Map<Location, Set<Location>> chainMembership = new HashMap<>();
+
+    public PipeManager(PipesPlugin plugin, World world) {
         this.plugin = plugin;
+        this.world = world;
+        this.offset = random.nextInt(21);
     }
 
     public void startTasks() {
-        // Use fastest interval among all variants for the task
-        int fastestInterval = getFastestTransferInterval();
-        transferTask = Bukkit.getScheduler().runTaskTimer(plugin, this::transferAllPipes, 20, fastestInterval);
+        world.submitCyclicalTask(
+                "pipes_transfer",
+                this::transferAllPipes
+        );
 
         if (plugin.getPipeConfig().isDebugParticles()) {
             int particleInterval = plugin.getPipeConfig().getParticleInterval();
-            particleTask = Bukkit.getScheduler().runTaskTimer(plugin, this::spawnDebugParticles, 20, particleInterval);
+            world.submitCyclicalTask(
+                    "pipes_particles",
+                    () -> {
+                        if ((offset + Bukkit.getServer().getCurrentTick()) % particleInterval == 0) {
+                            this.spawnDebugParticles();
+                        }
+                    }
+            );
         }
-    }
-
-    private int getFastestTransferInterval() {
-        int fastest = 10; // Default
-        for (PipeVariant variant : plugin.getVariantRegistry().getAllVariants()) {
-            if (variant.getTransferIntervalTicks() < fastest) {
-                fastest = variant.getTransferIntervalTicks();
-            }
-        }
-        return Math.max(1, fastest);
     }
 
     public void registerPipe(Location location, BlockFace facing, List<UUID> displayEntityIds, PipeVariant variant) {
-        pipes.put(normalizeLocation(location), new PipeData(facing, displayEntityIds, variant));
+        Location normalized = normalizeLocation(location);
+        pipes.put(normalized, new PipeData(facing, displayEntityIds, variant));
+        evictCacheByMember(normalized);
+        dirtyPaths.add(normalized);
+    }
+
+    /**
+     * 精准驱逐以 {@code location} 为起点的路径缓存条目。
+     * 适用于管道输出方向前方的方块发生变化时（放置/破坏容器或管道），
+     * 使该管道在下一个传输 tick 时重新寻路。
+     * 拓扑变化（管道本身增删）由 registerPipe / unregisterPipe 内部调用 evictCacheByMember 处理。
+     *
+     * @param location 需要重算路径的管道位置
+     */
+    public void invalidatePath(Location location) {
+        Location normalized = normalizeLocation(location);
+        evictCacheEntry(normalized);
     }
 
     public void unregisterPipe(Location location) {
         Location normalized = normalizeLocation(location);
         PipeData data = pipes.remove(normalized);
-        lastTransferTime.remove(normalized);
+        lastTransferTick.remove(normalized);
+        sleepUntil.remove(normalized);
+        nullDestRecheckUntil.remove(normalized);
+        dirtyPaths.remove(normalized);
+        evictCacheByMember(normalized);
 
-        World world = location.getWorld();
+        if (location.getWorld() != world) throw new RuntimeException("Location world does not match PipeManager world");
         if (world == null) return;
 
         // Try to remove all entities by UUID first
@@ -102,7 +119,7 @@ public class PipeManager {
     }
 
     private void removeDisplaysByTag(Location location) {
-        World world = location.getWorld();
+        if (location.getWorld() != world) throw new RuntimeException("Location world does not match PipeManager world");
         if (world == null) return;
 
         Collection<Entity> nearby = world.getNearbyEntities(
@@ -113,10 +130,105 @@ public class PipeManager {
 
         // Remove ALL matching entities, not just the first one
         for (Entity entity : nearby) {
-            String pipeTag = PipeTags.getPipeTag(entity.getScoreboardTags());
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag != null && PipeTags.matchesLocation(pipeTag, location)) {
                 entity.remove();
             }
+        }
+    }
+
+    /**
+     * 就地更换管道的变体（用于氧化、涂蜡、打磨等操作）。
+     * 更新 PipeData、头颅贴图、展示实体贴图及 PDC 标签，不改变位置和朝向。
+     */
+    public void convertPipeVariant(Location location, PipeVariant newVariant) {
+        Location normalized = normalizeLocation(location);
+        applyVariantConversion(normalized, newVariant);
+        evictCacheByMember(normalized);
+    }
+
+    /**
+     * 执行变体替换的核心逻辑（不触碰路径缓存，由调用方统一处理）。
+     */
+    private void applyVariantConversion(Location normalized, PipeVariant newVariant) {
+        PipeData data = pipes.get(normalized);
+        if (data == null) return;
+
+        // 更新 PipeData（朝向和显示实体 UUID 不变，仅替换变体）
+        pipes.put(normalized, new PipeData(data.facing(), data.displayEntityIds(), newVariant));
+
+        // 更新头颅方块贴图
+        Block block = normalized.getBlock();
+        if (block.getState() instanceof Skull skull) {
+            ItemStack headItem = plugin.getHeadItemForDirection(newVariant, data.facing());
+            if (headItem != null && headItem.getItemMeta() instanceof SkullMeta skullMeta) {
+                skull.setOwnerProfile(skullMeta.getOwnerProfile());
+                skull.update(true, false);
+            }
+        }
+
+        // 更新展示实体贴图与 PDC 标签
+        if (data.displayEntityIds() != null) {
+            for (UUID uuid : data.displayEntityIds()) {
+                Entity entity = world.getEntity(uuid);
+                if (!(entity instanceof ItemDisplay display)) continue;
+
+                String oldTag = PipeTags.getPipeTag(entity);
+                if (oldTag == null) continue;
+
+                if (PipeTags.isHeadDisplayTag(oldTag)) {
+                    ItemStack newHeadItem = plugin.getHeadItemForDirection(newVariant, data.facing());
+                    if (newHeadItem != null) display.setItemStack(newHeadItem);
+                    display.setTransformation(calculateCornerHeadTransformation(data.facing()));
+                    PipeTags.addPipeTag(entity, PipeTags.createHeadDisplayTag(normalized, data.facing(), newVariant));
+                } else if (PipeTags.isDirectionalTag(oldTag)) {
+                    BlockFace dirFacing = PipeTags.parseFacing(oldTag);
+                    if (dirFacing == null) continue;
+                    ItemStack newDirItem = plugin.getDirectionalDisplayItem(newVariant, dirFacing);
+                    if (newDirItem != null) display.setItemStack(newDirItem);
+                    PipeTags.addPipeTag(entity, PipeTags.createDirectionalTag(normalized, dirFacing, newVariant));
+                } else {
+                    ItemStack newDisplayItem = plugin.getDisplayItem(newVariant, data.facing());
+                    if (newDisplayItem != null) display.setItemStack(newDisplayItem);
+                    PipeTags.addPipeTag(entity, PipeTags.createTag(normalized, data.facing(), newVariant));
+                }
+            }
+        }
+    }
+
+    /**
+     * 随机氧化检查：遍历所有已加载的可氧化管道，按概率进行变体转换。
+     * 批量收集所有变换位置后，对路径缓存做一次性清理，避免逐根清理的重复扫描。
+     * @param transitions  变体ID → 目标变体ID 的映射
+     * @param chanceNum    概率分子
+     * @param chanceDenom  概率分母
+     * @param random       随机数生成器
+     */
+    public void tickOxidation(Map<String, String> transitions, int chanceNum, int chanceDenom, Random random) {
+        if (transitions.isEmpty()) return;
+
+        // 收集本轮所有需要转换的管道
+        List<Map.Entry<Location, PipeData>> snapshot = new ArrayList<>(pipes.entrySet());
+        Set<Location> convertedLocations = new HashSet<>();
+
+        for (Map.Entry<Location, PipeData> entry : snapshot) {
+            String variantId = entry.getValue().variant().getId();
+            String targetId = transitions.get(variantId);
+            if (targetId == null) continue;
+
+            if (random.nextInt(chanceDenom) < chanceNum) {
+                PipeVariant newVariant = plugin.getVariantRegistry().getVariant(targetId);
+                if (newVariant != null) {
+                    Location normalized = normalizeLocation(entry.getKey());
+                    applyVariantConversion(normalized, newVariant);
+                    convertedLocations.add(normalized);
+                }
+            }
+        }
+
+        // 对路径缓存做一次性清理：精准驱逐链路经过任意已转换位置的缓存条目
+        for (Location loc : convertedLocations) {
+            evictCacheByMember(loc);
         }
     }
 
@@ -128,55 +240,228 @@ public class PipeManager {
         return pipes.get(normalizeLocation(location));
     }
 
+    public void notifyBlockChanged(Location location) {
+        BlockFace[] faces = {BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST,
+                BlockFace.WEST, BlockFace.UP, BlockFace.DOWN};
+
+        for (BlockFace face : faces) {
+            Location adjacentLoc = location.getBlock().getRelative(face).getLocation();
+            PipeData pipeData = getPipeData(adjacentLoc);
+            if (pipeData == null) continue;
+
+            BlockFace pipeFacing = pipeData.facing();
+            boolean isCorner = pipeData.variant().getBehaviorType() == BehaviorType.CORNER;
+            if (isCorner || face == pipeFacing || face == pipeFacing.getOppositeFace()) {
+                updateDisplayEntity(adjacentLoc);
+            }
+            if (pipeFacing == face.getOppositeFace()) {
+                wakeUpPipe(adjacentLoc);
+                invalidatePath(adjacentLoc);
+            }
+        }
+    }
+
+    private void updatePipeBlockHead(Location normalized, PipeVariant variant, BlockFace facing) {
+        Block block = normalized.getBlock();
+        if (block.getState() instanceof Skull skull) {
+            ItemStack headItem = plugin.getHeadItemForDirection(variant, facing);
+            if (headItem != null && headItem.getItemMeta() instanceof SkullMeta skullMeta) {
+                skull.setOwnerProfile(skullMeta.getOwnerProfile());
+                skull.update(true, false);
+            }
+        }
+    }
+
     public void updateDisplayEntity(Location pipeLocation) {
         Location normalized = normalizeLocation(pipeLocation);
         PipeData data = pipes.get(normalized);
         if (data == null || data.displayEntityIds() == null || data.displayEntityIds().isEmpty()) return;
 
-        World world = pipeLocation.getWorld();
+        if (pipeLocation.getWorld() != world) throw new RuntimeException("Location world does not match PipeManager world");
         if (world == null) return;
 
-        // For corner pipes, we need to update both displays differently
+        updatePipeBlockHead(normalized, data.variant(), data.facing());
+
+        // For corner pipes, we need to refresh all directional displays
         if (data.variant().getBehaviorType() == BehaviorType.CORNER) {
-            updateCornerDisplayEntities(normalized, data, world);
+            refreshCornerDisplayEntities(pipeLocation);
         } else {
             // Regular pipes have single display
-            UUID uuid = data.displayEntityIds().get(0);
+            UUID uuid = data.displayEntityIds().getFirst();
             Entity entity = world.getEntity(uuid);
             if (entity instanceof ItemDisplay display) {
+                ItemStack displayItem = plugin.getDisplayItem(data.variant(), data.facing());
+                if (displayItem != null) display.setItemStack(displayItem);
                 Transformation transformation = calculateTransformation(normalized, data.facing(), data.variant());
                 display.setTransformation(transformation);
             }
         }
     }
 
-    private void updateCornerDisplayEntities(Location normalized, PipeData data, World world) {
-        // Find entities by tag to determine which is directional
-        Collection<Entity> nearby = world.getNearbyEntities(
-                normalized.clone().add(0.5, 0.5, 0.5),
-                1.0, 1.0, 1.0,
-                e -> e instanceof ItemDisplay
-        );
+    /**
+     * 完全重建转角管道的所有 display 实体：保留主体显示，删除所有旧的方向指示
+     * 实体，然后为每个活跃输出方向（主输出 + 副输出）分别生成一个新的方向指示实体。
+     * <p>
+     * 在转角放置、周围方块变化时调用，以保持视觉与传输逻辑一致。
+     */
+    public void refreshCornerDisplayEntities(Location location) {
+        Location normalized = normalizeLocation(location);
+        PipeData data = pipes.get(normalized);
+        if (data == null || data.variant().getBehaviorType() != BehaviorType.CORNER) return;
+        if (normalized.getWorld() != world) return;
 
-        for (Entity entity : nearby) {
-            String pipeTag = PipeTags.getPipeTag(entity.getScoreboardTags());
-            if (pipeTag != null && PipeTags.matchesLocation(pipeTag, normalized)) {
-                ItemDisplay display = (ItemDisplay) entity;
-                if (PipeTags.isDirectionalTag(pipeTag)) {
-                    // Update directional display
-                    Transformation transformation = calculateCornerDirectionalTransformation(normalized, data.facing());
-                    display.setTransformation(transformation);
+        // 计算当前应存在的活跃输出方向集合
+        Set<BlockFace> desiredFaces = new HashSet<>(getCornerActiveOutputFaces(normalized, data.facing()));
+
+        // 分类现有实体：主体实体保留 UUID，directional 实体按方向索引
+        List<UUID> finalIds = new ArrayList<>();
+        Map<BlockFace, UUID> existingDirEntities = new HashMap<>(); // face -> UUID
+        Set<BlockFace> retainedDirFaces = new HashSet<>();
+        UUID existingHeadDisplay = null;
+
+        if (data.displayEntityIds() != null) {
+            for (UUID uuid : data.displayEntityIds()) {
+                Entity entity = world.getEntity(uuid);
+                if (entity == null) continue;
+
+                String tag = PipeTags.getPipeTag(entity);
+                if (tag == null) continue;
+
+                if (PipeTags.isHeadDisplayTag(tag)) {
+                    if (existingHeadDisplay == null) {
+                        existingHeadDisplay = uuid;
+                    } else {
+                        entity.remove();
+                    }
+                } else if (PipeTags.isDirectionalTag(tag)) {
+                    BlockFace face = PipeTags.parseFacing(tag);
+                    if (face != null) {
+                        existingDirEntities.put(face, uuid);
+                    } else {
+                        entity.remove(); // 无法解析方向，清除
+                    }
                 } else {
-                    // Update main (non-directional) display
-                    Transformation transformation = calculateCornerTransformation();
-                    display.setTransformation(transformation);
+                    if (entity instanceof ItemDisplay display) {
+                        ItemStack displayItem = plugin.getDisplayItem(data.variant(), data.facing());
+                        if (displayItem != null) display.setItemStack(displayItem);
+                        display.setTransformation(calculateCornerTransformation(data.facing()));
+                    }
+                    finalIds.add(uuid); // 主体实体，直接保留
                 }
             }
         }
+
+        boolean needsHeadDisplay = needsCornerHeadDisplay(data.facing());
+        if (needsHeadDisplay) {
+            if (existingHeadDisplay != null) {
+                Entity entity = world.getEntity(existingHeadDisplay);
+                if (entity instanceof ItemDisplay display) {
+                    ItemStack headItem = plugin.getHeadItemForDirection(data.variant(), data.facing());
+                    if (headItem != null) display.setItemStack(headItem);
+                    display.setTransformation(calculateCornerHeadTransformation(data.facing()));
+                    PipeTags.addPipeTag(entity, PipeTags.createHeadDisplayTag(normalized, data.facing(), data.variant()));
+                    finalIds.add(existingHeadDisplay);
+                } else if (entity != null) {
+                    entity.remove();
+                }
+            } else {
+                ItemDisplay headDisplay = spawnCornerHeadDisplay(normalized, data.variant(), data.facing());
+                finalIds.add(headDisplay.getUniqueId());
+            }
+        } else if (existingHeadDisplay != null) {
+            Entity entity = world.getEntity(existingHeadDisplay);
+            if (entity != null) entity.remove();
+        }
+
+        // 移除不再需要的 directional 实体；保留的实体也要刷新贴图和变换
+        for (Map.Entry<BlockFace, UUID> entry : existingDirEntities.entrySet()) {
+            BlockFace outputFace = entry.getKey();
+            Entity entity = world.getEntity(entry.getValue());
+            if (!desiredFaces.contains(outputFace)) {
+                if (entity != null) entity.remove();
+                continue;
+            }
+
+            if (entity instanceof ItemDisplay display) {
+                ItemStack dirItem = plugin.getDirectionalDisplayItem(data.variant(), outputFace);
+                if (dirItem != null) display.setItemStack(dirItem);
+                display.setTransformation(calculateCornerDirectionalTransformation(normalized, outputFace));
+                finalIds.add(entry.getValue());
+                retainedDirFaces.add(outputFace);
+            } else if (entity != null) {
+                entity.remove();
+            }
+        }
+
+        // 新增尚不存在的方向指示实体
+        Location spawnLoc = normalized.clone().add(0.5, 0.5, 0.5);
+        for (BlockFace outputFace : desiredFaces) {
+            if (retainedDirFaces.contains(outputFace)) continue; // 已刷新，跳过
+
+            ItemStack dirItem = plugin.getDirectionalDisplayItem(data.variant(), outputFace);
+            Transformation dirTransform = calculateCornerDirectionalTransformation(normalized, outputFace);
+            PipeVariant variant = data.variant();
+            ItemDisplay dirDisplay = world.spawn(spawnLoc, ItemDisplay.class, entity -> {
+                entity.setItemStack(dirItem);
+                entity.setPersistent(true);
+                entity.setTransformation(dirTransform);
+                PipeTags.addPipeTag(entity, PipeTags.createDirectionalTag(normalized, outputFace, variant));
+            });
+            finalIds.add(dirDisplay.getUniqueId());
+        }
+
+        // 更新 PipeData 中的 display UUID 列表
+        pipes.put(normalized, new PipeData(data.facing(), finalIds, data.variant()));
+        evictCacheByMember(normalized);
+    }
+
+    /**
+     * 计算转角管道所有活跃输出方向：主输出方向始终包含，
+     * 其余方向若有可接收的容器或朝向匹配的普通管道则也包含。
+     * 侧向不自动接入另一个转角管道，避免两个转角紧挨时材质互相交融。
+     */
+    private List<BlockFace> getCornerActiveOutputFaces(Location cornerLoc, BlockFace primaryFacing) {
+        List<BlockFace> faces = new ArrayList<>();
+        faces.add(primaryFacing);
+
+        Block cornerBlock = cornerLoc.getBlock();
+        for (BlockFace face : new BlockFace[]{
+                BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST,
+                BlockFace.WEST, BlockFace.UP, BlockFace.DOWN}) {
+            if (face == primaryFacing) continue;
+
+            Block adjacent = cornerBlock.getRelative(face);
+
+            ContainerAdapter adapter = ContainerAdapterRegistry.findAdapter(adjacent).orElse(null);
+            if (adapter != null && adapter.canReceive(adjacent)) {
+                faces.add(face);
+                continue;
+            }
+
+            PipeData adjPipe = getPipeData(adjacent.getLocation());
+            if (adjPipe != null && canRouteIntoAdjacentPipe(face, adjPipe, false)) {
+                faces.add(face);
+            }
+        }
+        return faces;
+    }
+
+    private boolean canRouteIntoAdjacentPipe(BlockFace directionToAdjacent, PipeData adjacentPipeData) {
+        return canRouteIntoAdjacentPipe(directionToAdjacent, adjacentPipeData, true);
+    }
+
+    private boolean canRouteIntoAdjacentPipe(BlockFace directionToAdjacent, PipeData adjacentPipeData, boolean allowCornerPipe) {
+        if (adjacentPipeData.variant().getBehaviorType() == BehaviorType.REGULAR) {
+            return adjacentPipeData.facing() == directionToAdjacent;
+        }
+        if (!allowCornerPipe) {
+            return false;
+        }
+        return adjacentPipeData.facing() != directionToAdjacent.getOppositeFace();
     }
 
     public List<ItemDisplay> spawnDisplayEntities(Location location, BlockFace facing, PipeVariant variant) {
-        World world = location.getWorld();
+        if (location.getWorld() != world) throw new RuntimeException("Location world does not match PipeManager world");
         if (world == null) return List.of();
 
         List<ItemDisplay> displays = new ArrayList<>();
@@ -189,24 +474,27 @@ public class PipeManager {
         ItemDisplay mainDisplay = world.spawn(spawnLoc, ItemDisplay.class, entity -> {
             entity.setItemStack(pipeItem);
             entity.setPersistent(true);
-            entity.addScoreboardTag(PipeTags.createTag(location, facing, variant));
             entity.setTransformation(transformation);
+            PipeTags.addPipeTag(entity, PipeTags.createTag(location, facing, variant));
         });
         displays.add(mainDisplay);
 
-        // For corner pipes, spawn a second directional display entity
+        // For corner pipes, spawn directional displays for all active output faces
         if (variant.getBehaviorType() == BehaviorType.CORNER) {
-            // Use the corner variant's own directional display texture
-            ItemStack directionalItem = plugin.getDirectionalDisplayItem(variant, facing);
-            Transformation directionalTransformation = calculateCornerDirectionalTransformation(location, facing);
-
-            ItemDisplay directionalDisplay = world.spawn(spawnLoc, ItemDisplay.class, entity -> {
-                entity.setItemStack(directionalItem);
-                entity.setPersistent(true);
-                entity.addScoreboardTag(PipeTags.createDirectionalTag(location, facing, variant));
-                entity.setTransformation(directionalTransformation);
-            });
-            displays.add(directionalDisplay);
+            if (needsCornerHeadDisplay(facing)) {
+                displays.add(spawnCornerHeadDisplay(location, variant, facing));
+            }
+            for (BlockFace outputFace : getCornerActiveOutputFaces(location, facing)) {
+                ItemStack directionalItem = plugin.getDirectionalDisplayItem(variant, outputFace);
+                Transformation directionalTransformation = calculateCornerDirectionalTransformation(location, outputFace);
+                ItemDisplay directionalDisplay = world.spawn(spawnLoc, ItemDisplay.class, entity -> {
+                    entity.setItemStack(directionalItem);
+                    entity.setPersistent(true);
+                    entity.setTransformation(directionalTransformation);
+                    PipeTags.addPipeTag(entity, PipeTags.createDirectionalTag(location, outputFace, variant));
+                });
+                displays.add(directionalDisplay);
+            }
         }
 
         return displays;
@@ -241,7 +529,12 @@ public class PipeManager {
                 if (pipeData.facing() == currentFacing.getOppositeFace()) {
                     return "corner-into";
                 }
-                return "block"; // Corner pipe not feeding into us, treat as solid
+                // Corner pipe on our source side but facing orthogonally:
+                // it may be feeding items sideways into us (secondary output), treat as connected
+                if (pipeData.facing() != currentFacing) {
+                    return "corner-into";
+                }
+                return "block"; // Corner pipe facing same direction as us, treat as solid
             }
             // Regular pipe
             if (pipeData.facing() == currentFacing) {
@@ -256,7 +549,7 @@ public class PipeManager {
         // Check container types
         if (isChest(sourceBlock)) return "chest";
         if (isHopper(sourceBlock)) return "hopper";
-        if (sourceBlock.getState() instanceof Container) return "container";
+        if (ContainerAdapterRegistry.findAdapter(sourceBlock).isPresent()) return "container";
         if (sourceBlock.getType().isAir() || !sourceBlock.getType().isSolid()) return "air";
         return "block";
     }
@@ -286,7 +579,7 @@ public class PipeManager {
 
         if (isChest(destBlock)) return "chest";
         if (isHopper(destBlock)) return "hopper";
-        if (destBlock.getState() instanceof Container) return "container";
+        if (ContainerAdapterRegistry.findAdapter(destBlock).isPresent()) return "container";
         if (destBlock.getType().isAir() || !destBlock.getType().isSolid()) return "air";
         return "block";
     }
@@ -308,7 +601,7 @@ public class PipeManager {
     private Transformation calculateTransformation(Location pipeLocation, BlockFace facing, PipeVariant variant) {
         // Corner pipes use simple fixed transformation
         if (variant.getBehaviorType() == BehaviorType.CORNER) {
-            return calculateCornerTransformation();
+            return calculateCornerTransformation(facing);
         }
 
         // ============================================================
@@ -456,25 +749,59 @@ public class PipeManager {
             case SOUTH -> new AxisAngle4f((float) Math.PI, 0, 1, 0);
             case EAST -> new AxisAngle4f((float) -Math.PI / 2, 0, 1, 0);
             case WEST -> new AxisAngle4f((float) Math.PI / 2, 0, 1, 0);
-            case UP, DOWN -> new AxisAngle4f(0, 0, 1, 0);
             default -> new AxisAngle4f(0, 0, 1, 0);
         };
     }
 
-    private Transformation calculateCornerTransformation() {
+    private Transformation calculateCornerTransformation(BlockFace facing) {
         DisplayConfig display = plugin.getDisplayConfig();
         float scale = (float) display.getCornerScale();
-        float height = (float) display.getCornerHeight();
 
-        // Simple transformation: uniform scale, fixed height, no rotation
-        Vector3f translation = new Vector3f(0, height - 0.5f, 0); // Adjust from center (0.5) to desired height
+        String direction = getDirectionKey(facing, false);
+        Vector3f translation = new Vector3f(0, (float) display.getCornerBodyVerticalOffset(direction), 0);
         Vector3f scaleVec = new Vector3f(scale, scale, scale);
-        AxisAngle4f rotation = new AxisAngle4f(0, 0, 1, 0); // No rotation
+        AxisAngle4f rotation = buildCornerVerticalRotation(facing);
 
         return new Transformation(
                 translation,
                 rotation,
                 scaleVec,
+                new AxisAngle4f(0, 0, 0, 1)
+        );
+    }
+
+    private boolean needsCornerHeadDisplay(BlockFace facing) {
+        return facing == BlockFace.DOWN;
+    }
+
+    private ItemDisplay spawnCornerHeadDisplay(Location location, PipeVariant variant, BlockFace facing) {
+        Location normalized = normalizeLocation(location);
+        Location spawnLoc = normalized.clone().add(0.5, 0.5, 0.5);
+        ItemStack headItem = plugin.getHeadItemForDirection(variant, facing);
+        Transformation transformation = calculateCornerHeadTransformation(facing);
+        return world.spawn(spawnLoc, ItemDisplay.class, entity -> {
+            entity.setItemStack(headItem);
+            entity.setPersistent(true);
+            entity.setTransformation(transformation);
+            PipeTags.addPipeTag(entity, PipeTags.createHeadDisplayTag(normalized, facing, variant));
+        });
+    }
+
+    private AxisAngle4f buildCornerVerticalRotation(BlockFace facing) {
+        return facing == BlockFace.DOWN
+                ? new AxisAngle4f((float) Math.PI, 1, 0, 0)
+                : new AxisAngle4f(0, 0, 1, 0);
+    }
+
+    private Transformation calculateCornerHeadTransformation(BlockFace facing) {
+        DisplayConfig display = plugin.getDisplayConfig();
+        String direction = getDirectionKey(facing, false);
+        AxisAngle4f rotation = buildCornerVerticalRotation(facing);
+        Vector3f translation = new Vector3f(0, (float) display.getCornerHeadVerticalOffset(direction), 0);
+        return new Transformation(
+                translation,
+                rotation,
+                new Vector3f(1.0f, 1.0f, 1.0f),
                 new AxisAngle4f(0, 0, 0, 1)
         );
     }
@@ -519,8 +846,7 @@ public class PipeManager {
         // Scale factor for the facing direction
         double facingScale = baseFacingScale * displayLength;
 
-        // Translation: position center of display at displayCenter
-        double offsetForward = displayCenter + display.getCornerDirectionalForwardOffset();
+        double offsetForward = displayCenter + display.getCornerDirectionalForwardOffset(destDir);
 
         // Build the transformation components
         Vector3f scale = buildScale(facing, (float) facingScale, (float) perpScale);
@@ -547,7 +873,7 @@ public class PipeManager {
                         3,
                         0.2, 0.2, 0.2,
                         0,
-                        new Particle.DustOptions(org.bukkit.Color.fromRGB(255, 100, 50), 1.0f)
+                        new Particle.DustOptions(Color.fromRGB(255, 100, 50), 1.0f)
                 );
             }
         }
@@ -555,25 +881,68 @@ public class PipeManager {
 
     private void transferAllPipes() {
         long now = System.currentTimeMillis();
+        long currentTick = Bukkit.getServer().getCurrentTick();
         List<Location> toRemove = new ArrayList<>();
 
         for (Map.Entry<Location, PipeData> entry : pipes.entrySet()) {
             Location loc = entry.getKey();
             PipeData data = entry.getValue();
 
-            // Check if enough time has passed for this pipe's variant
-            long intervalMs = data.variant().getTransferIntervalTicks() * 50L;
-            Long lastTime = lastTransferTime.get(loc);
-
-            if (lastTime == null || (now - lastTime) >= intervalMs) {
-                if (transferItems(loc, data)) {
-                    toRemove.add(loc);
-                }
-                lastTransferTime.put(loc, now);
+            // 休眠检测：若管道正在休眠则直接跳过，不做任何计算
+            Long wakeTime = sleepUntil.get(loc);
+            if (wakeTime != null) {
+                if (now < wakeTime) continue;
+                sleepUntil.remove(loc); // 已醒，清除记录
             }
+
+            int intervalTicks = Math.max(1, data.variant().getTransferIntervalTicks());
+            Long lastTick = lastTransferTick.get(loc);
+
+            if (lastTick == null) {
+                if (!isTransferPhase(currentTick, loc, intervalTicks)) {
+                    continue;
+                }
+            } else if ((currentTick - lastTick) < intervalTicks) {
+                continue;
+            }
+
+            if (transferItems(loc, data)) {
+                toRemove.add(loc);
+            }
+            lastTransferTick.put(loc, currentTick);
         }
 
-        toRemove.forEach(pipes::remove);
+        for (Location loc : toRemove) {
+            unregisterPipe(loc);
+        }
+    }
+
+    private boolean isTransferPhase(long currentTick, Location location, int intervalTicks) {
+        if (intervalTicks <= 1) return true;
+        return Math.floorMod(currentTick, intervalTicks) == getTransferPhase(location, intervalTicks);
+    }
+
+    private int getTransferPhase(Location location, int intervalTicks) {
+        int hash = Objects.hash(location.getBlockX(), location.getBlockY(), location.getBlockZ());
+        return Math.floorMod(hash, intervalTicks);
+    }
+
+    /**
+     * 让指定位置的管道进入休眠，直到 {@code durationMs} 毫秒后再恢复检测。
+     * durationMs <= 0 时不操作（即配置禁用该优化）。
+     */
+    private void sleepPipe(Location normalized, long durationMs) {
+        if (durationMs <= 0) return;
+        sleepUntil.put(normalized, System.currentTimeMillis() + durationMs);
+    }
+
+    /**
+     * 唤醒某位置的管道（如附近的容器发生变化时可主动调用）。
+     */
+    public void wakeUpPipe(Location location) {
+        Location normalized = normalizeLocation(location);
+        sleepUntil.remove(normalized);
+        nullDestRecheckUntil.remove(normalized); // 同时重置末端探测冷却
     }
 
     /**
@@ -597,144 +966,493 @@ public class PipeManager {
         BlockFace sourceDirection = facing.getOppositeFace();
 
         Block sourceBlock = pipeBlock.getRelative(sourceDirection);
-        if (!(sourceBlock.getState() instanceof Container sourceContainer)) {
+        ContainerAdapter sourceAdapter = ContainerAdapterRegistry.findAdapter(sourceBlock).orElse(null);
+        if (sourceAdapter == null) {
             return false;
         }
 
-        Inventory sourceInv = sourceContainer.getInventory();
-        ItemStack toTransfer = null;
-        int sourceSlot = -1;
+        // Start with this pipe's items per transfer and find minimum along path
+        int startingMax = data.variant().getItemsPerTransfer();
 
-        for (int i = 0; i < sourceInv.getSize(); i++) {
-            ItemStack item = sourceInv.getItem(i);
-            if (item != null && !item.getType().isAir()) {
-                toTransfer = item.clone();
-                sourceSlot = i;
-                break;
+        // 先获取路径（含缓存），以便在提取前了解目的地的物品需求
+        CachedPath path = getOrBuildPath(pipeLocation, facing);
+        int transferAmount = path.minItemsPerTransfer();
+        int maxToExtract = Math.min(startingMax, transferAmount);
+
+        // 检查目的地是否声明了所需物品，若声明则针对性地从源容器提取。
+        // 同时缓存适配器引用，避免后续对同一方块的重复查找。
+        Block destBlock = path.destination() != null ? path.destination().getBlock() : null;
+        ContainerAdapter destAdapter = destBlock != null
+                ? ContainerAdapterRegistry.findAdapter(destBlock).orElse(null) : null;
+        ItemStack requested = destAdapter != null ? destAdapter.requestedItem(destBlock) : null;
+
+        ItemStack toTransfer;
+        if (requested != null) {
+            toTransfer = sourceAdapter.peekExtractMatching(sourceBlock, maxToExtract, requested);
+            if (toTransfer == null) {
+                // 源容器中没有目的地所需的物品；若源容器已完全为空则休眠，否则跳过本次传输
+                if (!sourceAdapter.hasItems(sourceBlock)) {
+                    sleepPipe(pipeLocation, plugin.getPipeConfig().getSourceEmptySleepMs());
+                    return false;
+                }
+                // 源容器有物品但类型不符合缓存目的地的需求（如石桶已存放不同物品）。
+                // 尝试提取实际物品并路由到备用容器，避免物品被永久卡住。
+                ItemStack anyItem = sourceAdapter.peekExtract(sourceBlock, maxToExtract);
+                if (anyItem != null) {
+                    ItemStack remaining = tryCornerJunctionAlternatives(path, anyItem);
+                    if (remaining != null && remaining.getAmount() > 0) {
+                        remaining = tryAlternativeDestination(path.lastPipeLocation(), path.destination(), remaining);
+                    }
+
+                    int remainingAmount = (remaining == null) ? 0 : Math.max(0, remaining.getAmount());
+                    int insertedAmount = anyItem.getAmount() - remainingAmount;
+                    if (insertedAmount > 0) {
+                        ItemStack extracted = anyItem.clone();
+                        extracted.setAmount(insertedAmount);
+                        sourceAdapter.commitExtract(sourceBlock, extracted);
+                        // 成功路由了不匹配类型的物品：驱逐缓存，让下次传输重新寻路找到正确目的地
+                        evictCacheEntry(normalizeLocation(pipeLocation));
+                    }
+                }
+                return false;
+            }
+        } else {
+            toTransfer = sourceAdapter.peekExtract(sourceBlock, maxToExtract);
+            if (toTransfer == null) {
+                // 源容器为空，进入休眠：接下来若干毫秒内不再检测此管道
+                sleepPipe(pipeLocation, plugin.getPipeConfig().getSourceEmptySleepMs());
+                return false;
             }
         }
 
-        if (toTransfer == null) return false;
-
-        // Start with this pipe's items per transfer and find minimum along path
-        int startingMax = data.variant().getItemsPerTransfer();
-        DestinationResult result = findDestination(pipeLocation, facing, new HashSet<>(), startingMax);
-
-        // Use the minimum from the path
-        int transferAmount = result.minItemsPerTransfer();
-        toTransfer.setAmount(Math.min(transferAmount, toTransfer.getAmount()));
-
         boolean transferred = false;
-        if (result.destination() == null) {
-            // No container destination - drop at the last pipe in the chain
-            Location lastPipeLoc = result.lastPipeLocation();
-            PipeData lastPipeData = getPipeData(lastPipeLoc);
-            BlockFace lastPipeFacing = lastPipeData != null ? lastPipeData.facing() : facing;
-
-            // Spawn at the pipe face (boundary between pipe and destination block)
-            // Use lower Y for horizontal pipes since item entity has height
-            double yOffset = lastPipeFacing.getModY() == 0 ? 0.25 : 0.5;
-            Location dropLoc = lastPipeLoc.getBlock().getLocation().add(0.5, yOffset, 0.5);
-            // Offset to the pipe's output face
-            dropLoc.add(lastPipeFacing.getModX() * 0.6, lastPipeFacing.getModY() * 0.6, lastPipeFacing.getModZ() * 0.6);
-
-            // For DOWN-facing pipes, lower spawn position to avoid clipping into the head
-            if (lastPipeFacing == BlockFace.DOWN) {
-                dropLoc.add(0, -0.05, 0);
+        if (path.destination() == null) {
+            // 无容器目的地时，先尝试转角节点的备用输出
+            ItemStack remaining = tryCornerJunctionAlternatives(path, toTransfer);
+            if (remaining != null && remaining.getAmount() > 0) {
+                remaining = tryAlternativeDestination(path.lastPipeLocation(), null, remaining);
             }
 
-            // Spawn item with velocity set during spawn to avoid dropItem's default velocity
-            Random random = new Random();
-            double baseSpeed = (lastPipeFacing == BlockFace.DOWN) ? 0 : 0.25;
-            double randomSpread = 0.05;
-            final ItemStack finalTransfer = toTransfer;
-            BlockFace finalFacing = lastPipeFacing;
+            if (remaining != null && remaining.getAmount() > 0) {
+                // 仍有剩余无法传输，掉落在链条末端
+                Location lastPipeLoc = path.lastPipeLocation();
+                PipeData lastPipeData = getPipeData(lastPipeLoc);
+                BlockFace finalFacing = lastPipeData != null ? lastPipeData.facing() : facing;
 
-            Item item = lastPipeLoc.getWorld().spawn(dropLoc, Item.class, spawnedItem -> {
-                spawnedItem.setItemStack(finalTransfer);
+                // Spawn at the pipe face (boundary between pipe and destination block)
+                // Use lower Y for horizontal pipes since item entity has height
+                double yOffset = finalFacing.getModY() == 0 ? 0.25 : 0.5;
+                Location dropLoc = lastPipeLoc.getBlock().getLocation().add(0.5, yOffset, 0.5);
+                // Offset to the pipe's output face
+                dropLoc.add(finalFacing.getModX() * 0.6, finalFacing.getModY() * 0.6, finalFacing.getModZ() * 0.6);
 
-                Vector velocity = new Vector(
-                    finalFacing.getModX() * baseSpeed + (random.nextDouble() - 0.5) * randomSpread,
-                    finalFacing.getModY() * baseSpeed + (random.nextDouble() - 0.5) * randomSpread,
-                    finalFacing.getModZ() * baseSpeed + (random.nextDouble() - 0.5) * randomSpread
-                );
-                spawnedItem.setVelocity(velocity);
-            });
+                // For DOWN-facing pipes, lower spawn position to avoid clipping into the head
+                if (finalFacing == BlockFace.DOWN) {
+                    dropLoc.add(0, -0.05, 0);
+                }
 
+                // Spawn item with velocity set during spawn to avoid dropItem's default velocity
+                double baseSpeed = (finalFacing == BlockFace.DOWN) ? 0 : 0.25;
+                double randomSpread = 0.05;
+                final ItemStack finalTransfer = remaining;
+
+                lastPipeLoc.getWorld().spawn(dropLoc, Item.class, spawnedItem -> {
+                    spawnedItem.setItemStack(finalTransfer);
+
+                    Vector velocity = new Vector(
+                        finalFacing.getModX() * baseSpeed + (random.nextDouble() - 0.5) * randomSpread,
+                        finalFacing.getModY() * baseSpeed + (random.nextDouble() - 0.5) * randomSpread,
+                        finalFacing.getModZ() * baseSpeed + (random.nextDouble() - 0.5) * randomSpread
+                    );
+                    spawnedItem.setVelocity(velocity);
+                });
+            }
             transferred = true;
         } else {
-            Block destBlock = result.destination().getBlock();
-            if (destBlock.getState() instanceof Container destContainer) {
-                HashMap<Integer, ItemStack> leftover = destContainer.getInventory().addItem(toTransfer);
-                if (leftover.isEmpty()) {
+            // destBlock and destAdapter are already resolved above when building the 'requested' check
+            if (destAdapter != null) {
+                ItemStack leftover = destAdapter.insert(destBlock, toTransfer);
+                int leftoverAmount = (leftover == null) ? 0 : Math.max(0, leftover.getAmount());
+                int insertedAmount = toTransfer.getAmount() - leftoverAmount;
+                if (leftoverAmount <= 0) {
+                    // 全部插入成功
                     transferred = true;
+                } else if (insertedAmount > 0) {
+                    // 部分插入：仅提交实际插入数量，不进入休眠
+                    ItemStack partialExtract = toTransfer.clone();
+                    partialExtract.setAmount(insertedAmount);
+                    sourceAdapter.commitExtract(sourceBlock, partialExtract);
+                    return false;
+                } else {
+                    // 完全无法插入，尝试备用输出
+                    ItemStack remaining = tryCornerJunctionAlternatives(path, toTransfer);
+                    if (remaining != null && remaining.getAmount() > 0) {
+                        remaining = tryAlternativeDestination(path.lastPipeLocation(), path.destination(), remaining);
+                    }
+
+                    int remainingAmount = (remaining == null) ? 0 : Math.max(0, remaining.getAmount());
+                    int altInsertedAmount = toTransfer.getAmount() - remainingAmount;
+                    if (remainingAmount <= 0) {
+                        transferred = true;
+                    } else if (altInsertedAmount > 0) {
+                        ItemStack partialExtract = toTransfer.clone();
+                        partialExtract.setAmount(altInsertedAmount);
+                        sourceAdapter.commitExtract(sourceBlock, partialExtract);
+                        return false;
+                    } else {
+                        // 所有出口均已满，进入休眠：接下来若干毫秒内不再检测此管道
+                        sleepPipe(pipeLocation, plugin.getPipeConfig().getDestFullSleepMs());
+                    }
                 }
             }
         }
 
         if (transferred) {
-            ItemStack sourceItem = sourceInv.getItem(sourceSlot);
-            if (sourceItem != null) {
-                sourceItem.setAmount(sourceItem.getAmount() - toTransfer.getAmount());
-                if (sourceItem.getAmount() <= 0) {
-                    sourceInv.setItem(sourceSlot, null);
-                }
-            }
+            sourceAdapter.commitExtract(sourceBlock, toTransfer);
         }
         return false;
     }
 
-    private DestinationResult findDestination(Location pipeLocation, BlockFace facing,
-                                               Set<Location> visited, int currentMinItems) {
+    /**
+     * 转角管道多路输出：扫描路径链中所有转角节点，对每个节点尝试除入流方向和主输出方向之外
+     * 的相邻管道/容器（按 NORTH→SOUTH→EAST→WEST→UP→DOWN 优先级顺序）。
+     *
+     * @param path 当前路径（含完整管道链）
+     * @param item 待传输物品
+     * @return 剩余未插入的物品；若全部插入则返回 {@code null}
+     */
+    private ItemStack tryCornerJunctionAlternatives(CachedPath path, ItemStack item) {
+        return tryCornerJunctionAlternatives(path, item, new HashSet<>(), 0);
+    }
+
+    private ItemStack tryCornerJunctionAlternatives(CachedPath path, ItemStack item,
+                                                    Set<Location> visitedTails, int depth) {
+        if (item == null || item.getAmount() <= 0) return null;
+        if (depth > MAX_FALLBACK_DEPTH) return item;
+
+        Location currentTail = normalizeLocation(path.lastPipeLocation());
+        if (!visitedTails.add(currentTail)) return item;
+
+        ItemStack remaining = item.clone();
+        List<Location> chain = path.pipeChain();
+        for (int i = 1; i < chain.size(); i++) {
+            if (remaining.getAmount() <= 0) return null;
+
+            Location loc = chain.get(i);
+            PipeData pipeData = getPipeData(loc);
+            if (pipeData == null || pipeData.variant().getBehaviorType() != BehaviorType.CORNER) continue;
+
+            // 推断物品入流方向：上一节点的朝向即为物品的行进方向，
+            // 从转角管道视角看，入流面 = 行进方向的反方向
+            PipeData prevPipeData = getPipeData(chain.get(i - 1));
+            if (prevPipeData == null) continue;
+            // 物品行进方向 = prevPipeData.facing()；入流面（要跳过）= 行进方向的反面
+            BlockFace skipIncoming = prevPipeData.facing().getOppositeFace();
+            BlockFace primaryOut = pipeData.facing(); // 主输出已尝试过，跳过
+
+            Block cornerBlock = loc.getBlock();
+            // 以链条内所有位置作为初始 visited，避免循环
+            Set<Location> baseVisited = new HashSet<>(chain);
+
+            for (BlockFace face : new BlockFace[]{
+                    BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST,
+                    BlockFace.WEST, BlockFace.UP, BlockFace.DOWN}) {
+                if (face == skipIncoming) continue;
+                if (face == primaryOut) continue;
+
+                Block adjacent = cornerBlock.getRelative(face);
+                Location adjLoc = normalizeLocation(adjacent.getLocation());
+
+                // 先尝试直接相邻容器
+                ContainerAdapter adjAdapter = ContainerAdapterRegistry.findAdapter(adjacent).orElse(null);
+                if (adjAdapter != null && adjAdapter.canReceive(adjacent)) {
+                    ItemStack leftover = adjAdapter.insert(adjacent, remaining);
+                    if (leftover == null || leftover.getAmount() <= 0) return null;
+                    remaining = leftover;
+                    continue;
+                }
+
+                // 再尝试相邻普通管道（沿该管道继续寻路）
+                PipeData adjPipeData = getPipeData(adjLoc);
+                if (adjPipeData == null) continue;
+                if (!canRouteIntoAdjacentPipe(face, adjPipeData, false)) continue;
+
+                Set<Location> visited = new HashSet<>(baseVisited);
+                visited.add(loc); // 标记转角自身，防止重入
+                CachedPath altPath = findDestination(adjLoc, adjPipeData.facing(), visited, new ArrayList<>(), Integer.MAX_VALUE);
+
+                ItemStack branchRemaining = remaining;
+                if (altPath.destination() != null) {
+                    Block destBlock = altPath.destination().getBlock();
+                    ContainerAdapter destAdapter = ContainerAdapterRegistry.findAdapter(destBlock).orElse(null);
+                    if (destAdapter != null && destAdapter.canReceive(destBlock)) {
+                        ItemStack leftover = destAdapter.insert(destBlock, branchRemaining);
+                        branchRemaining = (leftover == null || leftover.getAmount() <= 0) ? null : leftover;
+                    }
+                }
+
+                if (branchRemaining != null && branchRemaining.getAmount() > 0) {
+                    branchRemaining = tryCornerJunctionAlternatives(altPath, branchRemaining, visitedTails, depth + 1);
+                }
+                if (branchRemaining != null && branchRemaining.getAmount() > 0) {
+                    branchRemaining = tryAlternativeDestination(
+                            altPath.lastPipeLocation(), altPath.destination(), branchRemaining, visitedTails, depth + 1);
+                }
+
+                if (branchRemaining == null || branchRemaining.getAmount() <= 0) return null;
+                remaining = branchRemaining;
+            }
+        }
+        return remaining;
+    }
+
+    /**
+     * 优先级分流：主目标不可用时，尝试链条末端周围的相邻容器或相邻管道分支。
+     * <p>
+     * 按 NORTH → SOUTH → EAST → WEST → UP → DOWN 固定顺序依次尝试，
+     * 若相邻方块是管道，则沿该分支继续寻路到可接收容器。
+     *
+     * @param lastPipeLoc 链条末端管道的位置
+     * @param primaryDest 主目标位置（已满，跳过）
+     * @param item        待传输的物品
+     * @return 剩余未插入的物品；若全部插入则返回 {@code null}
+     */
+    private ItemStack tryAlternativeDestination(Location lastPipeLoc, Location primaryDest, ItemStack item) {
+        return tryAlternativeDestination(lastPipeLoc, primaryDest, item, new HashSet<>(), 0);
+    }
+
+    private ItemStack tryAlternativeDestination(Location lastPipeLoc, Location primaryDest, ItemStack item,
+                                                Set<Location> visitedTails, int depth) {
+        if (item == null || item.getAmount() <= 0) return null;
+        if (depth > MAX_FALLBACK_DEPTH) return item;
+
+        Location currentTail = normalizeLocation(lastPipeLoc);
+        if (!visitedTails.add(currentTail)) return item;
+
+        Block lastPipeBlock = lastPipeLoc.getBlock();
+        PipeData lastPipeData = getPipeData(lastPipeLoc);
+        // 链条来向（反方向），不向源头插入
+        BlockFace backFace = lastPipeData != null ? lastPipeData.facing().getOppositeFace() : null;
+        BlockFace primaryFace = lastPipeData != null ? lastPipeData.facing() : null;
+        boolean lastPipeIsCorner = lastPipeData != null
+                && lastPipeData.variant().getBehaviorType() == BehaviorType.CORNER;
+
+        ItemStack remaining = item.clone();
+        Location normalizedPrimary = primaryDest == null ? null : normalizeLocation(primaryDest);
+        for (BlockFace face : new BlockFace[]{
+                BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST,
+                BlockFace.WEST, BlockFace.UP, BlockFace.DOWN}) {
+            if (remaining.getAmount() <= 0) return null;
+
+            // 跳过已尝试的主目标方向
+            if (face == backFace) continue;
+            if (!lastPipeIsCorner && face != primaryFace) continue;
+
+            Block adjacent = lastPipeBlock.getRelative(face);
+            Location adjLoc = normalizeLocation(adjacent.getLocation());
+
+            // 跳过主目标（已满）
+            if (Objects.equals(adjLoc, normalizedPrimary)) continue;
+            // 先尝试直接相邻容器
+            ContainerAdapter adapter = ContainerAdapterRegistry.findAdapter(adjacent).orElse(null);
+            if (adapter != null && adapter.canReceive(adjacent)) {
+                ItemStack leftover = adapter.insert(adjacent, remaining);
+                if (leftover == null || leftover.getAmount() <= 0) return null;
+                remaining = leftover;
+                continue;
+            }
+
+            // 再尝试相邻管道分支（多层并联）。转角管道只允许在主出口方向接入，侧向不自动串接。
+            PipeData adjPipeData = getPipeData(adjLoc);
+            if (adjPipeData == null) continue;
+            if (!canRouteIntoAdjacentPipe(face, adjPipeData, face == primaryFace)) continue;
+
+            Set<Location> visited = new HashSet<>();
+            visited.add(normalizeLocation(lastPipeLoc));
+            CachedPath altPath = findDestination(adjLoc, adjPipeData.facing(), visited, new ArrayList<>(), Integer.MAX_VALUE);
+
+            ItemStack branchRemaining = remaining;
+            if (altPath.destination() != null) {
+                Location altDestLoc = normalizeLocation(altPath.destination());
+                if (!Objects.equals(altDestLoc, normalizedPrimary)) {
+                    Block altDestBlock = altPath.destination().getBlock();
+                    ContainerAdapter altDestAdapter = ContainerAdapterRegistry.findAdapter(altDestBlock).orElse(null);
+                    if (altDestAdapter != null && altDestAdapter.canReceive(altDestBlock)) {
+                        ItemStack leftover = altDestAdapter.insert(altDestBlock, branchRemaining);
+                        branchRemaining = (leftover == null || leftover.getAmount() <= 0) ? null : leftover;
+                    }
+                }
+            }
+
+            // 分支路径自身也可能包含转角并联输出，继续沿分支做一次并联分流。
+            if (branchRemaining != null && branchRemaining.getAmount() > 0) {
+                branchRemaining = tryCornerJunctionAlternatives(altPath, branchRemaining, visitedTails, depth + 1);
+            }
+            if (branchRemaining != null && branchRemaining.getAmount() > 0) {
+                branchRemaining = tryAlternativeDestination(
+                        altPath.lastPipeLocation(), altPath.destination(), branchRemaining, visitedTails, depth + 1);
+            }
+
+            if (branchRemaining == null || branchRemaining.getAmount() <= 0) return null;
+            remaining = branchRemaining;
+        }
+        return remaining;
+    }
+
+    private CachedPath getOrBuildPath(Location pipeLocation, BlockFace facing) {
+        Location key = normalizeLocation(pipeLocation);
+
+        if (dirtyPaths.remove(key)) {
+            evictCacheEntry(key);
+        }
+
+        CachedPath cached = pathCache.get(key);
+        if (cached != null) {
+            if (isPathStillValid(key, cached)) {
+                return cached;
+            }
+            evictCacheEntry(key);
+        }
+
+        CachedPath fresh = findDestination(pipeLocation, facing, new HashSet<>(), new ArrayList<>(), Integer.MAX_VALUE);
+        pathCache.put(key, fresh);
+        for (Location member : fresh.pipeChain()) {
+            chainMembership.computeIfAbsent(member, k -> new HashSet<>()).add(key);
+        }
+        return fresh;
+    }
+
+    /**
+     * 驱逐单条路径缓存并同步清理反向索引。
+     */
+    private void evictCacheEntry(Location key) {
+        CachedPath old = pathCache.remove(key);
+        if (old == null) return;
+        nullDestRecheckUntil.remove(normalizeLocation(old.lastPipeLocation()));
+        for (Location member : old.pipeChain()) {
+            Set<Location> starts = chainMembership.get(member);
+            if (starts != null) {
+                starts.remove(key);
+                if (starts.isEmpty()) chainMembership.remove(member);
+            }
+        }
+    }
+
+    /**
+     * 通过反向索引精准驱逐所有链路经过 {@code member} 的缓存条目。
+     * O(出度链路数)，与网络总规模无关。
+     */
+    private void evictCacheByMember(Location member) {
+        Set<Location> starts = chainMembership.remove(member);
+        if (starts == null) return;
+        for (Location start : starts) {
+            CachedPath old = pathCache.remove(start);
+            if (old == null) continue;
+            nullDestRecheckUntil.remove(normalizeLocation(old.lastPipeLocation()));
+            // 同步清理该路径其他成员对 start 的反向引用
+            for (Location otherMember : old.pipeChain()) {
+                if (otherMember.equals(member)) continue;
+                Set<Location> otherStarts = chainMembership.get(otherMember);
+                if (otherStarts != null) {
+                    otherStarts.remove(start);
+                    if (otherStarts.isEmpty()) chainMembership.remove(otherMember);
+                }
+            }
+        }
+    }
+
+    private boolean isPathStillValid(Location pipeKey, CachedPath path) {
+        if (path.destination() == null) {
+            Location recheckKey = normalizeLocation(path.lastPipeLocation());
+            long recheckMs = plugin.getPipeConfig().getEndRecheckSleepMs();
+            if (recheckMs > 0) {
+                Long recheckAt = nullDestRecheckUntil.get(recheckKey);
+                long now = System.currentTimeMillis();
+                if (recheckAt != null && now < recheckAt) {
+                    return true; // 冷却中，O(1)
+                }
+            }
+
+            // 冷却到期，检查末端是否新放置了容器或管道
+            PipeData lastPipeData = getPipeData(recheckKey);
+            if (lastPipeData != null) {
+                Block endBlock = recheckKey.getBlock().getRelative(lastPipeData.facing());
+                Location endLoc = normalizeLocation(endBlock.getLocation());
+                ContainerAdapter endAdapter = ContainerAdapterRegistry.findAdapter(endBlock).orElse(null);
+                if ((endAdapter != null && endAdapter.canReceive(endBlock)) || getPipeData(endLoc) != null) {
+                    return false; // 末端出现了新的容器或管道，需要重新寻路
+                }
+            }
+
+            // 仍无目标，重置冷却计时
+            if (recheckMs > 0) {
+                nullDestRecheckUntil.put(recheckKey, System.currentTimeMillis() + recheckMs);
+            }
+            return true;
+        }
+
+        Block destBlock = path.destination().getBlock();
+        ContainerAdapter destAdapter = ContainerAdapterRegistry.findAdapter(destBlock).orElse(null);
+        return destAdapter != null && destAdapter.canReceive(destBlock);
+    }
+
+    private CachedPath findDestination(Location pipeLocation, BlockFace facing,
+                                       Set<Location> visited, List<Location> chain, int currentMin) {
+        Location normalized = normalizeLocation(pipeLocation);
+        chain.add(normalized);
+
+        // 将本节点的传输速率纳入最小值计算
+        PipeData selfData = getPipeData(normalized);
+        if (selfData != null) currentMin = Math.min(currentMin, selfData.variant().getItemsPerTransfer());
+
         Block nextBlock = pipeLocation.getBlock().getRelative(facing);
         Location nextLoc = normalizeLocation(nextBlock.getLocation());
 
         if (visited.contains(nextLoc)) {
-            return new DestinationResult(null, pipeLocation, currentMinItems);
+            return new CachedPath(null, pipeLocation, chain, currentMin);
         }
         visited.add(nextLoc);
 
-        if (nextBlock.getState() instanceof Container) {
-            return new DestinationResult(nextLoc, pipeLocation, currentMinItems);
+        ContainerAdapter destAdapter = ContainerAdapterRegistry.findAdapter(nextBlock).orElse(null);
+        if (destAdapter != null && destAdapter.canReceive(nextBlock)) {
+            return new CachedPath(nextLoc, pipeLocation, chain, currentMin);
         }
 
         PipeData nextPipeData = getPipeData(nextLoc);
         if (nextPipeData != null) {
-            // Calculate new minimum based on next pipe's settings
-            int nextMin = Math.min(currentMinItems, nextPipeData.variant().getItemsPerTransfer());
-
-            // If the next pipe is facing INTO this pipe (head-to-head), drop the item
-            if (nextPipeData.facing() == facing.getOppositeFace()) {
-                return new DestinationResult(null, pipeLocation, currentMinItems);
+            if (!canRouteIntoAdjacentPipe(facing, nextPipeData)) {
+                return new CachedPath(null, pipeLocation, chain, currentMin);
             }
-            // Otherwise, follow the next pipe's direction (same direction, perpendicular, etc.)
-            return findDestination(nextLoc, nextPipeData.facing(), visited, nextMin);
+            // Otherwise, follow the next pipe's own output direction.
+            return findDestination(nextLoc, nextPipeData.facing(), visited, chain, currentMin);
         }
 
-        return new DestinationResult(null, pipeLocation, currentMinItems);
+        return new CachedPath(null, pipeLocation, chain, currentMin);
     }
 
     public void shutdown() {
         stopTasks();
         pipes.clear();
-        lastTransferTime.clear();
+        lastTransferTick.clear();
+        sleepUntil.clear();
+        pathCache.clear();
+        dirtyPaths.clear();
+        nullDestRecheckUntil.clear();
+        chainMembership.clear();
     }
 
     /**
      * Removes orphaned display entities in the given world.
      * An orphaned display entity is one that has a pipe tag but no corresponding pipe block.
-     * @param world The world to scan
      * @return The number of orphaned display entities removed
      */
-    public int cleanupOrphanedDisplays(World world) {
+    public int cleanupOrphanedDisplays() {
         int removed = 0;
         for (Entity entity : world.getEntities()) {
             if (!(entity instanceof ItemDisplay)) continue;
+            if (!PipeTags.isPipeEntity(entity)) continue;
 
-            Set<String> tags = entity.getScoreboardTags();
-            if (!PipeTags.isPipeEntity(tags)) continue;
-
-            String pipeTag = PipeTags.getPipeTag(tags);
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag == null) continue;
 
             Location blockLoc = PipeTags.parseLocation(pipeTag, world);
@@ -754,18 +1472,15 @@ public class PipeManager {
 
     /**
      * Counts orphaned display entities in the given world.
-     * @param world The world to scan
      * @return The number of orphaned display entities
      */
-    public int countOrphanedDisplays(World world) {
+    public int countOrphanedDisplays() {
         int count = 0;
         for (Entity entity : world.getEntities()) {
             if (!(entity instanceof ItemDisplay)) continue;
+            if (!PipeTags.isPipeEntity(entity)) continue;
 
-            Set<String> tags = entity.getScoreboardTags();
-            if (!PipeTags.isPipeEntity(tags)) continue;
-
-            String pipeTag = PipeTags.getPipeTag(tags);
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag == null) continue;
 
             Location blockLoc = PipeTags.parseLocation(pipeTag, world);
@@ -805,10 +1520,9 @@ public class PipeManager {
     /**
      * Deletes all pipes and their display entities in the given world.
      * Also removes the pipe blocks themselves.
-     * @param world The world to clear
      * @return The number of pipes deleted
      */
-    public int deleteAllPipes(World world) {
+    public int deleteAllPipes() {
         List<Location> toRemove = new ArrayList<>();
 
         for (Map.Entry<Location, PipeData> entry : pipes.entrySet()) {
@@ -836,15 +1550,15 @@ public class PipeManager {
         startTasks();
     }
 
+    public void refreshAllDisplays() {
+        for (Location location : new ArrayList<>(pipes.keySet())) {
+            updateDisplayEntity(location);
+        }
+    }
+
     private void stopTasks() {
-        if (transferTask != null) {
-            transferTask.cancel();
-            transferTask = null;
-        }
-        if (particleTask != null) {
-            particleTask.cancel();
-            particleTask = null;
-        }
+        world.removeCyclicalTask("pipes_transfer");
+        world.removeCyclicalTask("pipes_particles");
     }
 
     private Location normalizeLocation(Location location) {
@@ -854,25 +1568,31 @@ public class PipeManager {
                 location.getBlockZ());
     }
 
-    public void scanForExistingPipes(World world) {
+    public void scanForExistingPipes() {
         int count = 0;
 
         for (Chunk chunk : world.getLoadedChunks()) {
-            count += scanChunk(chunk);
+            count += scanChunk(chunk, false);
         }
 
         if (count > 0) {
-            plugin.getLogger().info("Restored " + count + " pipes in world " + world.getName());
+            refreshAllDisplays();
         }
     }
 
     public int scanChunk(Chunk chunk) {
+        return scanChunk(chunk, true);
+    }
+
+    private int scanChunk(Chunk chunk, boolean refreshAfterRegistration) {
         if (!chunk.isLoaded()) {
             return 0;
         }
+        if (chunk.getWorld() != world) {
+            throw new IllegalArgumentException("Chunk world does not match PipeManager world");
+        }
 
         int count = 0;
-        World world = chunk.getWorld();
         VariantRegistry registry = plugin.getVariantRegistry();
 
         // Group entities by location to handle multiple entities per pipe
@@ -883,7 +1603,7 @@ public class PipeManager {
         for (Entity entity : chunk.getEntities()) {
             if (!(entity instanceof ItemDisplay)) continue;
 
-            String pipeTag = PipeTags.getPipeTag(entity.getScoreboardTags());
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag == null) continue;
 
             Location location = PipeTags.parseLocation(pipeTag, world);
@@ -894,7 +1614,6 @@ public class PipeManager {
 
             PipeVariant variant = registry.getVariant(variantId);
             if (variant == null) {
-                plugin.getLogger().warning("Unknown variant '" + variantId + "' for pipe at " + location);
                 continue;
             }
 
@@ -905,8 +1624,15 @@ public class PipeManager {
             if (block.getType() == Material.PLAYER_HEAD || block.getType() == Material.PLAYER_WALL_HEAD) {
                 // Group entities by location
                 entityGroups.computeIfAbsent(normalized, k -> new ArrayList<>()).add(entity.getUniqueId());
-                facingByLocation.put(normalized, facing);
-                variantByLocation.put(normalized, variant);
+                // Only read pipe facing from the main (non-directional) entity to avoid
+                // secondary directional entities overwriting the correct pipe facing.
+                if (!PipeTags.isDirectionalTag(pipeTag) && !PipeTags.isHeadDisplayTag(pipeTag)) {
+                    facingByLocation.put(normalized, facing);
+                    variantByLocation.put(normalized, variant);
+                } else {
+                    // Still record variant in case main entity hasn't been seen yet
+                    variantByLocation.putIfAbsent(normalized, variant);
+                }
             } else {
                 // Orphaned display entity - pipe block was removed while chunk was unloaded
                 entity.remove();
@@ -914,14 +1640,26 @@ public class PipeManager {
         }
 
         // Register all grouped pipes
+        List<Location> registeredLocations = new ArrayList<>();
         for (Map.Entry<Location, List<UUID>> entry : entityGroups.entrySet()) {
             Location location = entry.getKey();
             if (!isPipe(location)) {
                 List<UUID> uuids = entry.getValue();
                 BlockFace facing = facingByLocation.get(location);
                 PipeVariant variant = variantByLocation.get(location);
+                if (facing == null || variant == null) continue;
                 registerPipe(location, facing, uuids, variant);
+                registeredLocations.add(location);
                 count++;
+            }
+        }
+
+        if (refreshAfterRegistration) {
+            for (Location location : registeredLocations) {
+                updateDisplayEntity(location);
+            }
+            for (Location location : registeredLocations) {
+                notifyBlockChanged(location);
             }
         }
 
@@ -931,7 +1669,9 @@ public class PipeManager {
     public void unloadPipesInChunk(Chunk chunk) {
         int chunkX = chunk.getX();
         int chunkZ = chunk.getZ();
-        World world = chunk.getWorld();
+        if (chunk.getWorld() != world) {
+            throw new IllegalArgumentException("Chunk world does not match PipeManager world");
+        }
 
         pipes.entrySet().removeIf(entry -> {
             Location loc = entry.getKey();
@@ -941,7 +1681,11 @@ public class PipeManager {
             int locChunkZ = loc.getBlockZ() >> 4;
 
             if (locChunkX == chunkX && locChunkZ == chunkZ) {
-                lastTransferTime.remove(loc);
+                lastTransferTick.remove(loc);
+                sleepUntil.remove(loc);
+                nullDestRecheckUntil.remove(loc);
+                dirtyPaths.remove(loc);
+                evictCacheByMember(loc);
                 return true;
             }
             return false;
@@ -950,10 +1694,10 @@ public class PipeManager {
 
     public BlockFace getFacingFromSkull(Block block) {
         if (block.getType() == Material.PLAYER_WALL_HEAD) {
-            org.bukkit.block.data.Directional directional = (org.bukkit.block.data.Directional) block.getBlockData();
+            Directional directional = (Directional) block.getBlockData();
             return directional.getFacing();
         } else if (block.getType() == Material.PLAYER_HEAD) {
-            org.bukkit.block.data.Rotatable rotatable = (org.bukkit.block.data.Rotatable) block.getBlockData();
+            Rotatable rotatable = (Rotatable) block.getBlockData();
             return rotatable.getRotation();
         }
         return BlockFace.NORTH;

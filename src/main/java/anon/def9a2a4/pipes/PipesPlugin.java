@@ -1,44 +1,41 @@
 package anon.def9a2a4.pipes;
 
+import anon.def9a2a4.pipes.config.DisplayConfig;
+import anon.def9a2a4.pipes.config.PipeConfig;
+import anon.def9a2a4.pipes.listener.CauldronConversionListener;
+import anon.def9a2a4.pipes.listener.OxidationListener;
+import anon.def9a2a4.pipes.listener.PipeListener;
 import com.destroystokyo.paper.profile.PlayerProfile;
 import com.destroystokyo.paper.profile.ProfileProperty;
+import me.xiaozhangup.slimecargo.utils.FlexibleItem;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.block.BlockFace;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import org.bukkit.World;
-import org.bukkit.configuration.ConfigurationSection;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.configuration.file.YamlConfiguration;
-
-import anon.def9a2a4.pipes.config.DisplayConfig;
-import anon.def9a2a4.pipes.config.PipeConfig;
-
 import java.io.File;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Stream;
-
-import org.bukkit.entity.Player;
-import org.bstats.bukkit.Metrics;
 
 public class PipesPlugin extends JavaPlugin {
 
+    private static PipesPlugin instance;
     private static final UUID PIPE_PROFILE_UUID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
     // Maps keyed by variant ID
@@ -47,21 +44,23 @@ public class PipesPlugin extends JavaPlugin {
     private final Map<String, Map<BlockFace, ItemStack>> displayItems = new HashMap<>();
     private final Map<String, Map<BlockFace, ItemStack>> directionalDisplayItems = new HashMap<>();
 
+    // Use WeakHashMap to allow worlds to be garbage collected if unloaded
+    private final WeakHashMap<World, PipeManager> pipeManager = new WeakHashMap<>();
+
     private FileConfiguration displayConfigRaw;
     private PipeConfig pipeConfig;
     private DisplayConfig displayConfig;
     private VariantRegistry variantRegistry;
-    private PipeManager pipeManager;
-    private RecipeManager recipeManager;
-    private RecipeUnlockListener recipeUnlockListener;
+//    private RecipeManager recipeManager;
+    private WorldManager worldManager;
+//    private RecipeUnlockListener recipeUnlockListener;
     private CauldronConversionListener cauldronConversionListener;
-    private ConversionRecipeCraftListener conversionRecipeCraftListener;
+    private OxidationListener oxidationListener;
+//    private ConversionRecipeCraftListener conversionRecipeCraftListener;
 
     @Override
     public void onEnable() {
-        int pluginId = 28844;
-        new Metrics(this, pluginId);
-
+        instance = this;
         variantRegistry = new VariantRegistry(this);
         loadConfigs();
 
@@ -70,35 +69,41 @@ public class PipesPlugin extends JavaPlugin {
         }
 
         loadItems();
-        pipeManager = new PipeManager(this);
 
-        recipeManager = new RecipeManager(this);
-        recipeManager.registerRecipes();
+//        recipeManager = new RecipeManager(this);
+//        recipeManager.registerRecipes();
 
-        recipeUnlockListener = new RecipeUnlockListener(this, recipeManager);
+        worldManager = new WorldManager(this, pipeManager);
+//        recipeUnlockListener = new RecipeUnlockListener(this, recipeManager);
         cauldronConversionListener = new CauldronConversionListener(this);
-        conversionRecipeCraftListener = new ConversionRecipeCraftListener(this, recipeManager);
+        oxidationListener = new OxidationListener(this, pipeManager);
+//        conversionRecipeCraftListener = new ConversionRecipeCraftListener(this, recipeManager);
         getServer().getPluginManager().registerEvents(new PipeListener(this, pipeManager), this);
-        getServer().getPluginManager().registerEvents(recipeUnlockListener, this);
+        getServer().getPluginManager().registerEvents(worldManager, this);
+//        getServer().getPluginManager().registerEvents(recipeUnlockListener, this);
         getServer().getPluginManager().registerEvents(cauldronConversionListener, this);
-        getServer().getPluginManager().registerEvents(conversionRecipeCraftListener, this);
-
-        // Scan all loaded worlds for existing pipes (handles server restart)
-        for (World world : Bukkit.getWorlds()) {
-            pipeManager.scanForExistingPipes(world);
-        }
-
-        pipeManager.startTasks();
+        getServer().getPluginManager().registerEvents(oxidationListener, this);
+//        getServer().getPluginManager().registerEvents(conversionRecipeCraftListener, this);
+        FlexibleItem.INSTANCE.registerHandler(new PipeItemHandler());
 
         getLogger().info("Pipes enabled!");
     }
 
     @Override
     public void onDisable() {
-        if (pipeManager != null) {
-            pipeManager.shutdown();
+        if (oxidationListener != null) {
+            oxidationListener.shutdown();
         }
+        for (PipeManager manager : pipeManager.values()) {
+            manager.shutdown();
+        }
+        pipeManager.clear();
+        instance = null;
         getLogger().info("Pipes disabled!");
+    }
+
+    public static PipesPlugin getInstance() {
+        return instance;
     }
 
     @Override
@@ -117,19 +122,25 @@ public class PipesPlugin extends JavaPlugin {
                 }
 
                 // Unregister old recipes
-                recipeManager.unregisterRecipes();
+//                recipeManager.unregisterRecipes();
 
                 loadConfigs();
                 loadItems();
-                recipeManager.registerRecipes();
-                pipeManager.restartTasks();
+//                recipeManager.registerRecipes();
+                for (PipeManager manager : pipeManager.values()) {
+                    manager.refreshAllDisplays();
+                    manager.restartTasks();
+                }
 
                 // Re-create unlock listener with new config and sync online players
-                recipeUnlockListener = new RecipeUnlockListener(this, recipeManager);
-                recipeUnlockListener.syncAllOnlinePlayers();
+//                recipeUnlockListener = new RecipeUnlockListener(this, recipeManager);
+//                recipeUnlockListener.syncAllOnlinePlayers();
 
                 // Reload cauldron conversions
                 cauldronConversionListener.loadConversions();
+
+                // Reload oxidation config
+                oxidationListener.reload();
 
                 sender.sendMessage(Component.text("Pipes config reloaded!")
                         .color(NamedTextColor.GREEN));
@@ -149,7 +160,7 @@ public class PipesPlugin extends JavaPlugin {
                     return true;
                 }
 
-                recipeManager.discoverAllRecipes(player);
+//                recipeManager.discoverAllRecipes(player);
                 sender.sendMessage(Component.text("Unlocked all Pipes recipes!")
                         .color(NamedTextColor.GREEN));
                 return true;
@@ -227,7 +238,9 @@ public class PipesPlugin extends JavaPlugin {
 
                 int totalRemoved = 0;
                 for (World world : Bukkit.getWorlds()) {
-                    int removed = pipeManager.cleanupOrphanedDisplays(world);
+                    PipeManager manager = pipeManager.get(world);
+                    if (manager == null) continue;
+                    int removed = manager.cleanupOrphanedDisplays();
                     if (removed > 0) {
                         sender.sendMessage(Component.text("Removed " + removed + " orphaned display(s) in " + world.getName())
                                 .color(NamedTextColor.GRAY));
@@ -256,25 +269,40 @@ public class PipesPlugin extends JavaPlugin {
                         .color(NamedTextColor.GOLD));
 
                 // Pipe counts by variant
-                Map<String, Integer> counts = pipeManager.getPipeCountsByVariant();
-                int totalPipes = pipeManager.getTotalPipeCount();
-
-                if (counts.isEmpty()) {
-                    sender.sendMessage(Component.text("No pipes registered.")
-                            .color(NamedTextColor.GRAY));
+                List<World> worlds = new ArrayList<>();
+                if (sender instanceof Player player) {
+                    worlds.add(player.getWorld());
                 } else {
-                    sender.sendMessage(Component.text("Registered pipes: " + totalPipes)
-                            .color(NamedTextColor.WHITE));
-                    for (Map.Entry<String, Integer> entry : counts.entrySet()) {
-                        sender.sendMessage(Component.text("  " + entry.getKey() + ": " + entry.getValue())
+                    worlds.addAll(Bukkit.getWorlds());
+                }
+                for (World world : worlds) {
+                    PipeManager manager = pipeManager.get(world);
+                    if (manager == null) continue;
+                    Map<String, Integer> counts = manager.getPipeCountsByVariant();
+                    int totalPipes = manager.getTotalPipeCount();
+
+                    sender.sendMessage(Component.text(world.getName() + ":")
+                            .color(NamedTextColor.GOLD));
+
+                    if (counts.isEmpty()) {
+                        sender.sendMessage(Component.text(" No pipes registered.")
                                 .color(NamedTextColor.GRAY));
+                    } else {
+                        sender.sendMessage(Component.text(" Registered pipes: " + totalPipes)
+                                .color(NamedTextColor.WHITE));
+                        for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+                            sender.sendMessage(Component.text("   " + entry.getKey() + ": " + entry.getValue())
+                                    .color(NamedTextColor.GRAY));
+                        }
                     }
                 }
 
                 // Orphaned display counts
                 int totalOrphaned = 0;
-                for (World world : Bukkit.getWorlds()) {
-                    int orphaned = pipeManager.countOrphanedDisplays(world);
+                for (World world : worlds) {
+                    PipeManager manager = pipeManager.get(world);
+                    if (manager == null) continue;
+                    int orphaned = manager.countOrphanedDisplays();
                     if (orphaned > 0) {
                         sender.sendMessage(Component.text("Orphaned displays in " + world.getName() + ": " + orphaned)
                                 .color(NamedTextColor.YELLOW));
@@ -298,16 +326,27 @@ public class PipesPlugin extends JavaPlugin {
                             .color(NamedTextColor.RED));
                     return true;
                 }
+                if (!(sender instanceof Player player)) {
+                    sender.sendMessage(Component.text("This command can only be used by players.")
+                            .color(NamedTextColor.RED));
+                    return true;
+                }
 
                 int totalDeleted = 0;
-                for (World world : Bukkit.getWorlds()) {
-                    int deleted = pipeManager.deleteAllPipes(world);
-                    if (deleted > 0) {
-                        sender.sendMessage(Component.text("Deleted " + deleted + " pipe(s) in " + world.getName())
-                                .color(NamedTextColor.GRAY));
-                    }
-                    totalDeleted += deleted;
+                World world = player.getWorld();
+                PipeManager manager = pipeManager.get(world);
+                if (manager == null) {
+                    sender.sendMessage(Component.text("No pipe manager found for world: " + world.getName())
+                            .color(NamedTextColor.RED));
+                    return true;
                 }
+
+                int deleted = manager.deleteAllPipes();
+                if (deleted > 0) {
+                    sender.sendMessage(Component.text("Deleted " + deleted + " pipe(s) in " + world.getName())
+                            .color(NamedTextColor.GRAY));
+                }
+                totalDeleted += deleted;
 
                 if (totalDeleted > 0) {
                     sender.sendMessage(Component.text("Deleted " + totalDeleted + " pipe(s) total.")
@@ -333,7 +372,7 @@ public class PipesPlugin extends JavaPlugin {
         }
 
         if (args.length == 1) {
-            return Stream.of("help", "reload", "give", "recipes", "cleanup", "info", "delete_all")
+            return Stream.of("help", "reload", "give"/*, "recipes" */, "cleanup", "info"/*, "delete_all" */)
                     .filter(s -> s.toLowerCase().startsWith(args[0].toLowerCase()))
                     .toList();
         }
@@ -460,9 +499,7 @@ public class PipesPlugin extends JavaPlugin {
         // Head block textures
         Map<BlockFace, ItemStack> heads = new HashMap<>();
         heads.put(BlockFace.NORTH, createPipeItem(variant, textures.getHeadTexture(BlockFace.NORTH)));
-        if (variant.getBehaviorType() == BehaviorType.REGULAR) {
-            heads.put(BlockFace.UP, createPipeItem(variant, textures.getHeadTexture(BlockFace.UP)));
-        }
+        heads.put(BlockFace.UP, createPipeItem(variant, textures.getHeadTexture(BlockFace.UP)));
         heads.put(BlockFace.DOWN, createPipeItem(variant, textures.getHeadTexture(BlockFace.DOWN)));
         headItems.put(variantId, heads);
 
@@ -473,6 +510,7 @@ public class PipesPlugin extends JavaPlugin {
             // Load directional display items for corner pipes
             Map<BlockFace, ItemStack> directionalDisplays = new HashMap<>();
             directionalDisplays.put(BlockFace.NORTH, createPipeItem(variant, textures.getDirectionalDisplayTexture(BlockFace.NORTH)));
+            directionalDisplays.put(BlockFace.UP, createPipeItem(variant, textures.getDirectionalDisplayTexture(BlockFace.UP)));
             directionalDisplays.put(BlockFace.DOWN, createPipeItem(variant, textures.getDirectionalDisplayTexture(BlockFace.DOWN)));
             directionalDisplayItems.put(variantId, directionalDisplays);
         } else {
@@ -501,11 +539,21 @@ public class PipesPlugin extends JavaPlugin {
 
         meta.displayName(variant.getDisplayName()
                 .decoration(TextDecoration.ITALIC, false));
+        meta.lore(variant.getLore().stream()
+                .map(line -> line.decoration(TextDecoration.ITALIC, false))
+                .toList());
 
         meta.getPersistentDataContainer().set(variant.getPdcKey(), PersistentDataType.BYTE, (byte) 1);
 
         item.setItemMeta(meta);
         return item;
+    }
+
+    public void notifyBlockChanged(org.bukkit.Location location) {
+        PipeManager manager = pipeManager.get(location.getWorld());
+        if (manager != null) {
+            manager.notifyBlockChanged(location);
+        }
     }
 
     public ItemStack getPipeItem(PipeVariant variant) {
@@ -520,10 +568,10 @@ public class PipesPlugin extends JavaPlugin {
         // Horizontal directions all use the same texture
         if (facing == BlockFace.NORTH || facing == BlockFace.SOUTH ||
             facing == BlockFace.EAST || facing == BlockFace.WEST) {
-            return heads.get(BlockFace.NORTH).clone();
+            return heads.get(BlockFace.NORTH);
         }
         ItemStack item = heads.get(facing);
-        return item != null ? item.clone() : heads.get(BlockFace.NORTH).clone();
+        return item != null ? item : heads.get(BlockFace.NORTH);
     }
 
     public ItemStack getDisplayItem(PipeVariant variant, BlockFace facing) {
@@ -531,18 +579,18 @@ public class PipesPlugin extends JavaPlugin {
         if (displays == null) return null;
 
         if (variant.getBehaviorType() == BehaviorType.CORNER) {
-            return displays.get(BlockFace.NORTH).clone();
+            return displays.get(BlockFace.NORTH);
         }
         // Regular pipes: use direction-specific texture
         if (facing == BlockFace.UP) {
             ItemStack item = displays.get(BlockFace.UP);
-            return item != null ? item.clone() : displays.get(BlockFace.NORTH).clone();
+            return item != null ? item : displays.get(BlockFace.NORTH);
         } else if (facing == BlockFace.DOWN) {
             ItemStack item = displays.get(BlockFace.DOWN);
-            return item != null ? item.clone() : displays.get(BlockFace.NORTH).clone();
+            return item != null ? item : displays.get(BlockFace.NORTH);
         }
         // Horizontal directions all use the same texture
-        return displays.get(BlockFace.NORTH).clone();
+        return displays.get(BlockFace.NORTH);
     }
 
     /**
@@ -552,12 +600,16 @@ public class PipesPlugin extends JavaPlugin {
         Map<BlockFace, ItemStack> displays = directionalDisplayItems.get(variant.getId());
         if (displays == null) return null;
 
+        if (facing == BlockFace.UP) {
+            ItemStack item = displays.get(BlockFace.UP);
+            return item != null ? item : displays.get(BlockFace.NORTH);
+        }
         if (facing == BlockFace.DOWN) {
             ItemStack item = displays.get(BlockFace.DOWN);
-            return item != null ? item.clone() : displays.get(BlockFace.NORTH).clone();
+            return item != null ? item : displays.get(BlockFace.NORTH);
         }
         // Horizontal directions all use the same texture
-        return displays.get(BlockFace.NORTH).clone();
+        return displays.get(BlockFace.NORTH);
     }
 
     /**

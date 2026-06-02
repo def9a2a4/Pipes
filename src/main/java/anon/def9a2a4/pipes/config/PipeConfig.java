@@ -11,6 +11,11 @@ public class PipeConfig {
     private final boolean debugParticles;
     private final int particleInterval;
 
+    // Sleep / hibernation settings
+    private final long sourceEmptySleepMs;
+    private final long destFullSleepMs;
+    private final long endRecheckSleepMs;
+
     // Recipe unlock settings
     private final String unlockAdvancement;
     private final boolean showUnlockMessage;
@@ -19,6 +24,14 @@ public class PipeConfig {
     public PipeConfig(FileConfiguration config) {
         this.debugParticles = config.getBoolean("global.debug.particles", false);
         this.particleInterval = config.getInt("global.debug.particle-interval", 10);
+
+        // Sleep durations: ticks → milliseconds
+        int sourceEmptyTicks = config.getInt("global.performance.sleep.source-empty-ticks", 40);
+        int destFullTicks = config.getInt("global.performance.sleep.dest-full-ticks", 40);
+        int endRecheckTicks = config.getInt("global.performance.sleep.end-recheck-ticks", 40);
+        this.sourceEmptySleepMs = sourceEmptyTicks * 50L;
+        this.destFullSleepMs = destFullTicks * 50L;
+        this.endRecheckSleepMs = endRecheckTicks * 50L;
 
         // Recipe unlock settings
         this.unlockAdvancement = config.getString("recipes.unlock-advancement", "minecraft:story/smelt_iron");
@@ -32,6 +45,18 @@ public class PipeConfig {
 
     public int getParticleInterval() {
         return particleInterval;
+    }
+
+    public long getSourceEmptySleepMs() {
+        return sourceEmptySleepMs;
+    }
+
+    public long getDestFullSleepMs() {
+        return destFullSleepMs;
+    }
+
+    public long getEndRecheckSleepMs() {
+        return endRecheckSleepMs;
     }
 
     public String getUnlockAdvancement() {

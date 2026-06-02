@@ -10,11 +10,7 @@ import org.bukkit.inventory.RecipeChoice;
 import org.bukkit.inventory.ShapedRecipe;
 import org.bukkit.inventory.ShapelessRecipe;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Manages recipe registration, unregistration, and player discovery.
@@ -67,7 +63,7 @@ public class RecipeManager {
             for (RecipeDefinition recipe : recipes) {
                 NamespacedKey recipeKey = new NamespacedKey(plugin, recipe.key());
 
-                ItemStack result = resultItem.clone();
+                ItemStack result = plugin.getPipeItem(variant);
                 result.setAmount(recipe.resultAmount());
 
                 ShapedRecipe shapedRecipe = new ShapedRecipe(recipeKey, result);
@@ -143,10 +139,9 @@ public class RecipeManager {
             ItemStack resultItem = plugin.getPipeItem(toVariant);
             if (resultItem == null) continue;
 
-            ItemStack result = resultItem.clone();
-            result.setAmount(resultAmount);
+            resultItem.setAmount(resultAmount);
 
-            ShapelessRecipe shapelessRecipe = new ShapelessRecipe(key, result);
+            ShapelessRecipe shapelessRecipe = new ShapelessRecipe(key, resultItem);
 
             // Use ExactChoice for the pipe item to match our custom item
             ItemStack sourceItem = plugin.getPipeItem(fromVariant);

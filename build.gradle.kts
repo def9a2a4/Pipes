@@ -1,10 +1,12 @@
 plugins {
     java
     id("com.gradleup.shadow") version "9.3.0"
+    id("org.jetbrains.kotlin.jvm") version "2.1.21"
+    id("maven-publish")
 }
 
 group = "anon.def9a2a4"
-version = "0.1.1"
+version = "0.1.3"
 
 java {
     toolchain {
@@ -14,6 +16,7 @@ java {
 
 repositories {
     mavenCentral()
+    mavenLocal()
     maven {
         name = "papermc"
         url = uri("https://repo.papermc.io/repository/maven-public/")
@@ -21,8 +24,9 @@ repositories {
 }
 
 dependencies {
-    compileOnly("io.papermc.paper:paper-api:1.21.8-R0.1-SNAPSHOT")
-    implementation("org.bstats:bstats-bukkit:3.1.0")
+    compileOnly("me.xiaozhangup.octopus:octopus-api:1.21.11-R0.1-SNAPSHOT")
+    compileOnly("me.xiaozhangup:SlimeCargoNext:1.0.2")
+    compileOnly(kotlin("stdlib"))
 }
 
 tasks {
@@ -47,5 +51,19 @@ tasks {
         mergeServiceFiles()
         archiveClassifier.set("")
         archiveBaseName.set("Pipes")
+    }
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("mavenJava") {
+            from(components["java"])
+            groupId = project.group.toString()
+            artifactId = "pipes"
+            version = project.version.toString()
+        }
+    }
+    repositories {
+        mavenLocal()
     }
 }

@@ -38,17 +38,18 @@ public class PipeManager {
     private record DestinationResult(Location destination, Location lastPipeLocation, int minItemsPerTransfer) {}
 
     private final PipesPlugin plugin;
+    private final World world;
     private final Map<Location, PipeData> pipes = new HashMap<>();
     private final Map<Location, Long> lastTransferTime = new HashMap<>();
     private BukkitTask transferTask;
     private BukkitTask particleTask;
 
-    public PipeManager(PipesPlugin plugin) {
+    public PipeManager(PipesPlugin plugin, World world) {
         this.plugin = plugin;
+        this.world = world;
     }
 
     public void startTasks() {
-        // Use fastest interval among all variants for the task
         int fastestInterval = getFastestTransferInterval();
         transferTask = Bukkit.getScheduler().runTaskTimer(plugin, this::transferAllPipes, 20, fastestInterval);
 
@@ -59,7 +60,7 @@ public class PipeManager {
     }
 
     private int getFastestTransferInterval() {
-        int fastest = 10; // Default
+        int fastest = 10;
         for (PipeVariant variant : plugin.getVariantRegistry().getAllVariants()) {
             if (variant.getTransferIntervalTicks() < fastest) {
                 fastest = variant.getTransferIntervalTicks();
@@ -76,9 +77,6 @@ public class PipeManager {
         Location normalized = normalizeLocation(location);
         PipeData data = pipes.remove(normalized);
         lastTransferTime.remove(normalized);
-
-        World world = location.getWorld();
-        if (world == null) return;
 
         // Try to remove all entities by UUID first
         boolean allRemoved = true;
@@ -102,9 +100,6 @@ public class PipeManager {
     }
 
     private void removeDisplaysByTag(Location location) {
-        World world = location.getWorld();
-        if (world == null) return;
-
         Collection<Entity> nearby = world.getNearbyEntities(
                 location.clone().add(0.5, 0.5, 0.5),
                 1.0, 1.0, 1.0,
@@ -133,12 +128,9 @@ public class PipeManager {
         PipeData data = pipes.get(normalized);
         if (data == null || data.displayEntityIds() == null || data.displayEntityIds().isEmpty()) return;
 
-        World world = pipeLocation.getWorld();
-        if (world == null) return;
-
         // For corner pipes, we need to update both displays differently
         if (data.variant().getBehaviorType() == BehaviorType.CORNER) {
-            updateCornerDisplayEntities(normalized, data, world);
+            updateCornerDisplayEntities(normalized, data);
         } else {
             // Regular pipes have single display
             UUID uuid = data.displayEntityIds().get(0);
@@ -150,7 +142,7 @@ public class PipeManager {
         }
     }
 
-    private void updateCornerDisplayEntities(Location normalized, PipeData data, World world) {
+    private void updateCornerDisplayEntities(Location normalized, PipeData data) {
         // Find entities by tag to determine which is directional
         Collection<Entity> nearby = world.getNearbyEntities(
                 normalized.clone().add(0.5, 0.5, 0.5),
@@ -176,9 +168,6 @@ public class PipeManager {
     }
 
     public List<ItemDisplay> spawnDisplayEntities(Location location, BlockFace facing, PipeVariant variant) {
-        World world = location.getWorld();
-        if (world == null) return List.of();
-
         List<ItemDisplay> displays = new ArrayList<>();
         Location spawnLoc = location.clone().add(0.5, 0.5, 0.5);
 
@@ -537,19 +526,15 @@ public class PipeManager {
     }
 
     private void spawnDebugParticles() {
-        for (Map.Entry<Location, PipeData> entry : pipes.entrySet()) {
-            Location loc = entry.getKey();
-            World world = loc.getWorld();
-            if (world != null) {
-                world.spawnParticle(
-                        Particle.DUST,
-                        loc.clone().add(0.5, 0.5, 0.5),
-                        3,
-                        0.2, 0.2, 0.2,
-                        0,
-                        new Particle.DustOptions(org.bukkit.Color.fromRGB(255, 100, 50), 1.0f)
-                );
-            }
+        for (Location loc : pipes.keySet()) {
+            world.spawnParticle(
+                    Particle.DUST,
+                    loc.clone().add(0.5, 0.5, 0.5),
+                    3,
+                    0.2, 0.2, 0.2,
+                    0,
+                    new Particle.DustOptions(org.bukkit.Color.fromRGB(255, 100, 50), 1.0f)
+            );
         }
     }
 
@@ -650,7 +635,7 @@ public class PipeManager {
             final ItemStack finalTransfer = toTransfer;
             BlockFace finalFacing = lastPipeFacing;
 
-            Item item = lastPipeLoc.getWorld().spawn(dropLoc, Item.class, spawnedItem -> {
+            world.spawn(dropLoc, Item.class, spawnedItem -> {
                 spawnedItem.setItemStack(finalTransfer);
 
                 Vector velocity = new Vector(
@@ -721,12 +706,11 @@ public class PipeManager {
     }
 
     /**
-     * Removes orphaned display entities in the given world.
+     * Removes orphaned display entities in this manager's world.
      * An orphaned display entity is one that has a pipe tag but no corresponding pipe block.
-     * @param world The world to scan
      * @return The number of orphaned display entities removed
      */
-    public int cleanupOrphanedDisplays(World world) {
+    public int cleanupOrphanedDisplays() {
         int removed = 0;
         for (Entity entity : world.getEntities()) {
             if (!(entity instanceof ItemDisplay)) continue;
@@ -751,11 +735,10 @@ public class PipeManager {
     }
 
     /**
-     * Counts orphaned display entities in the given world.
-     * @param world The world to scan
+     * Counts orphaned display entities in this manager's world.
      * @return The number of orphaned display entities
      */
-    public int countOrphanedDisplays(World world) {
+    public int countOrphanedDisplays() {
         int count = 0;
         for (Entity entity : world.getEntities()) {
             if (!(entity instanceof ItemDisplay)) continue;
@@ -799,20 +782,12 @@ public class PipeManager {
     }
 
     /**
-     * Deletes all pipes and their display entities in the given world.
+     * Deletes all pipes and their display entities in this manager's world.
      * Also removes the pipe blocks themselves.
-     * @param world The world to clear
      * @return The number of pipes deleted
      */
-    public int deleteAllPipes(World world) {
-        List<Location> toRemove = new ArrayList<>();
-
-        for (Map.Entry<Location, PipeData> entry : pipes.entrySet()) {
-            Location loc = entry.getKey();
-            if (!world.equals(loc.getWorld())) continue;
-
-            toRemove.add(loc);
-        }
+    public int deleteAllPipes() {
+        List<Location> toRemove = new ArrayList<>(pipes.keySet());
 
         for (Location loc : toRemove) {
             // Remove the block
@@ -825,6 +800,16 @@ public class PipeManager {
         }
 
         return toRemove.size();
+    }
+
+    public World getWorld() {
+        return world;
+    }
+
+    public void refreshAllDisplays() {
+        for (Location location : new ArrayList<>(pipes.keySet())) {
+            updateDisplayEntity(location);
+        }
     }
 
     public void restartTasks() {
@@ -844,13 +829,13 @@ public class PipeManager {
     }
 
     private Location normalizeLocation(Location location) {
-        return new Location(location.getWorld(),
+        return new Location(world,
                 location.getBlockX(),
                 location.getBlockY(),
                 location.getBlockZ());
     }
 
-    public void scanForExistingPipes(World world) {
+    public void scanForExistingPipes() {
         int count = 0;
 
         for (Chunk chunk : world.getLoadedChunks()) {
@@ -863,12 +848,11 @@ public class PipeManager {
     }
 
     public int scanChunk(Chunk chunk) {
-        if (!chunk.isLoaded()) {
+        if (!chunk.isLoaded() || chunk.getWorld() != world) {
             return 0;
         }
 
         int count = 0;
-        World world = chunk.getWorld();
         VariantRegistry registry = plugin.getVariantRegistry();
 
         // Group entities by location to handle multiple entities per pipe
@@ -936,14 +920,13 @@ public class PipeManager {
     }
 
     public void unloadPipesInChunk(Chunk chunk) {
+        if (chunk.getWorld() != world) return;
+
         int chunkX = chunk.getX();
         int chunkZ = chunk.getZ();
-        World world = chunk.getWorld();
 
         pipes.entrySet().removeIf(entry -> {
             Location loc = entry.getKey();
-            if (!world.equals(loc.getWorld())) return false;
-
             int locChunkX = loc.getBlockX() >> 4;
             int locChunkZ = loc.getBlockZ() >> 4;
 

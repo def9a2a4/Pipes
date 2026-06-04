@@ -14,6 +14,14 @@ recipes:
   show-unlock-message: true
   unlock-message: "<gold>You've unlocked pipe crafting recipes!"
 
+# World filter - control which worlds pipes can be used in
+# mode: "allowlist" (only listed worlds) or "blocklist" (all except listed worlds)
+# If mode is not set or empty, pipes are enabled in all worlds (default)
+# worlds:
+#   mode: blocklist
+#   list:
+#     - world_the_end
+
 # Global settings
 global:
   debug:

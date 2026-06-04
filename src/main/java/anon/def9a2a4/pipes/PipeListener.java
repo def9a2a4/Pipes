@@ -2,6 +2,7 @@ package anon.def9a2a4.pipes;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.Skull;
@@ -21,6 +22,8 @@ import org.bukkit.event.world.ChunkUnloadEvent;
 import org.bukkit.Location;
 import anon.def9a2a4.pipes.PipeManager.PipeData;
 import com.destroystokyo.paper.event.block.BlockDestroyEvent;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.util.Vector;
@@ -28,6 +31,7 @@ import org.bukkit.util.Vector;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -35,12 +39,19 @@ import java.util.stream.Collectors;
 public class PipeListener implements Listener {
 
     private final PipesPlugin plugin;
-    private final PipeManager pipeManager;
+    private final Map<World, PipeManager> pipeManagers;
     private final Random random = new Random();
 
-    public PipeListener(PipesPlugin plugin, PipeManager pipeManager) {
+    public PipeListener(PipesPlugin plugin, Map<World, PipeManager> pipeManagers) {
         this.plugin = plugin;
-        this.pipeManager = pipeManager;
+        this.pipeManagers = pipeManagers;
+    }
+
+    /**
+     * Get the PipeManager for a world, or null if pipes aren't active there.
+     */
+    private PipeManager getManager(World world) {
+        return pipeManagers.get(world);
     }
 
     /**
@@ -58,13 +69,16 @@ public class PipeListener implements Listener {
             return false;
         }
 
-        PipeData pipeData = pipeManager.getPipeData(block.getLocation());
+        PipeManager manager = getManager(block.getWorld());
+        if (manager == null) return false;
+
+        PipeData pipeData = manager.getPipeData(block.getLocation());
         if (pipeData == null) {
             return false;
         }
 
         PipeVariant variant = pipeData.variant();
-        pipeManager.unregisterPipe(block.getLocation());
+        manager.unregisterPipe(block.getLocation());
 
         if (shouldDrop) {
             ItemStack dropItem = plugin.getPipeItem(variant);
@@ -94,6 +108,15 @@ public class PipeListener implements Listener {
 
         PipeVariant variant = plugin.getVariant(item);
         if (variant != null) {
+            PipeManager manager = getManager(block.getWorld());
+            if (manager == null) {
+                // Pipes not enabled in this world
+                event.setCancelled(true);
+                event.getPlayer().sendMessage(Component.text("Pipes are not enabled in this world.")
+                        .color(NamedTextColor.RED));
+                return;
+            }
+
             BlockFace clickedFace = event.getBlockAgainst().getFace(block);
 
             BlockFace facing;
@@ -135,12 +158,12 @@ public class PipeListener implements Listener {
                 updatePlacedSkullTexture(loc.getBlock(), variant, finalFacing);
             }, 2L);
 
-            List<ItemDisplay> displays = pipeManager.spawnDisplayEntities(block.getLocation(), facing, variant);
+            List<ItemDisplay> displays = manager.spawnDisplayEntities(block.getLocation(), facing, variant);
             List<UUID> displayIds = displays.stream()
                     .map(ItemDisplay::getUniqueId)
                     .collect(Collectors.toList());
 
-            pipeManager.registerPipe(
+            manager.registerPipe(
                     block.getLocation(),
                     facing,
                     displayIds,
@@ -190,17 +213,20 @@ public class PipeListener implements Listener {
     }
 
     private void updateAdjacentPipes(Location blockLocation) {
+        PipeManager manager = getManager(blockLocation.getWorld());
+        if (manager == null) return;
+
         BlockFace[] faces = {BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN};
         Block block = blockLocation.getBlock();
 
         for (BlockFace face : faces) {
             Location adjacentLoc = block.getRelative(face).getLocation();
-            PipeData pipeData = pipeManager.getPipeData(adjacentLoc);
+            PipeData pipeData = manager.getPipeData(adjacentLoc);
             if (pipeData != null) {
                 BlockFace pipeFacing = pipeData.facing();
                 // Update if block is at pipe's source (opposite of facing) or destination (facing direction)
                 if (face == pipeFacing || face == pipeFacing.getOppositeFace()) {
-                    pipeManager.updateDisplayEntity(adjacentLoc);
+                    manager.updateDisplayEntity(adjacentLoc);
                 }
             }
         }
@@ -303,12 +329,16 @@ public class PipeListener implements Listener {
 
     @EventHandler
     public void onChunkLoad(ChunkLoadEvent event) {
+        PipeManager manager = getManager(event.getWorld());
+        if (manager == null) return;
         // Schedule for next tick to ensure entities are fully loaded
-        Bukkit.getScheduler().runTask(plugin, () -> pipeManager.scanChunk(event.getChunk()));
+        Bukkit.getScheduler().runTask(plugin, () -> manager.scanChunk(event.getChunk()));
     }
 
     @EventHandler
     public void onChunkUnload(ChunkUnloadEvent event) {
-        pipeManager.unloadPipesInChunk(event.getChunk());
+        PipeManager manager = getManager(event.getWorld());
+        if (manager == null) return;
+        manager.unloadPipesInChunk(event.getChunk());
     }
 }

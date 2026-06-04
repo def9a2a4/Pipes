@@ -4,8 +4,8 @@ Reimplementing good ideas from the reviewed `dev` branch as clean, incremental i
 
 ## Phases
 
-- [ ] **Phase 1: PDC migration** — Switch entity tags from scoreboard tags to PersistentDataContainer. Hybrid read (PDC first, scoreboard fallback) for backwards compat. PDC-only writes. Auto-migrate on chunk load.
-- [ ] **Phase 2: Per-world PipeManager** — One PipeManager per world via `WeakHashMap<World, PipeManager>`. New `WorldManager` for world load/unload lifecycle. Switch to Paper's `world.submitCyclicalTask()`.
+- [x] **Phase 1: PDC migration** — Switch entity tags from scoreboard tags to PersistentDataContainer. Hybrid read (PDC first, scoreboard fallback) for backwards compat. PDC-only writes. Auto-migrate on chunk load.
+- [x] **Phase 2: Per-world PipeManager** — One PipeManager per world via `WeakHashMap<World, PipeManager>`. New `WorldManager` for world load/unload lifecycle. Switch to Paper's `world.submitCyclicalTask()`. Config to enable/disable pipes per world.
 - [ ] **Phase 3: Container adapters** — Extract inventory logic into `ContainerAdapter` interface. Implementations for vanilla containers, furnaces (vanilla hopper parity), and brewing stands (no extract during brewing). `ContainerAdapterRegistry` for lookup.
 - [ ] **Phase 4: Path caching + sleep/throttle** — Cache computed paths with reverse-index invalidation. Validate all chain members (not just destination). Sleep idle pipes (empty source / full dest). Use ticks consistently. Transfer phase offset to spread load.
 - [ ] **Phase 5: Corner pipe improvements** — Multi-output display entities, DOWN-facing head displays, junction fallback routing (`tryCornerJunctionAlternatives`, `tryAlternativeDestination`), UP direction support.
@@ -49,11 +49,27 @@ Reimplementing good ideas from the reviewed `dev` branch as clean, incremental i
 - `PipeListener`, commands, and `notifyBlockChanged()` route to correct manager via `pipeManager.get(location.getWorld())`
 - Chunk scan scoped to the manager's world
 - Randomize transfer task offset per-manager to spread load across worlds
+- Config to enable/disable pipes per world (allowlist or blocklist mode)
+
+### Per-world config (`config.yml`)
+```yaml
+worlds:
+  mode: allowlist  # "allowlist" or "blocklist"
+  list:
+    - world
+    - world_the_end
+```
+- `allowlist` mode: pipes only work in listed worlds
+- `blocklist` mode: pipes work everywhere except listed worlds
+- Default: no filtering (all worlds enabled)
+- `WorldManager` checks config before creating a PipeManager for a world
+- Pipe placement blocked in disabled worlds (cancel `BlockPlaceEvent` with message)
 
 **Files to modify:**
 - `PipesPlugin.java` — WeakHashMap, routing helpers
 - `PipeManager.java` — constructor, world-bound tasks, remove world params from methods
-- `PipeListener.java` — route events to correct manager
+- `PipeListener.java` — route events to correct manager, block placement in disabled worlds
+- `PipeConfig.java` — parse world filter config
 - New `WorldManager.java`
 
 ---

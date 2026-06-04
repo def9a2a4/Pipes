@@ -113,7 +113,7 @@ public class PipeManager {
 
         // Remove ALL matching entities, not just the first one
         for (Entity entity : nearby) {
-            String pipeTag = PipeTags.getPipeTag(entity.getScoreboardTags());
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag != null && PipeTags.matchesLocation(pipeTag, location)) {
                 entity.remove();
             }
@@ -159,7 +159,7 @@ public class PipeManager {
         );
 
         for (Entity entity : nearby) {
-            String pipeTag = PipeTags.getPipeTag(entity.getScoreboardTags());
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag != null && PipeTags.matchesLocation(pipeTag, normalized)) {
                 ItemDisplay display = (ItemDisplay) entity;
                 if (PipeTags.isDirectionalTag(pipeTag)) {
@@ -189,7 +189,7 @@ public class PipeManager {
         ItemDisplay mainDisplay = world.spawn(spawnLoc, ItemDisplay.class, entity -> {
             entity.setItemStack(pipeItem);
             entity.setPersistent(true);
-            entity.addScoreboardTag(PipeTags.createTag(location, facing, variant));
+            PipeTags.addPipeTag(entity, PipeTags.createTag(location, facing, variant));
             entity.setTransformation(transformation);
         });
         displays.add(mainDisplay);
@@ -203,7 +203,7 @@ public class PipeManager {
             ItemDisplay directionalDisplay = world.spawn(spawnLoc, ItemDisplay.class, entity -> {
                 entity.setItemStack(directionalItem);
                 entity.setPersistent(true);
-                entity.addScoreboardTag(PipeTags.createDirectionalTag(location, facing, variant));
+                PipeTags.addPipeTag(entity, PipeTags.createDirectionalTag(location, facing, variant));
                 entity.setTransformation(directionalTransformation);
             });
             displays.add(directionalDisplay);
@@ -730,11 +730,9 @@ public class PipeManager {
         int removed = 0;
         for (Entity entity : world.getEntities()) {
             if (!(entity instanceof ItemDisplay)) continue;
+            if (!PipeTags.isPipeEntity(entity)) continue;
 
-            Set<String> tags = entity.getScoreboardTags();
-            if (!PipeTags.isPipeEntity(tags)) continue;
-
-            String pipeTag = PipeTags.getPipeTag(tags);
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag == null) continue;
 
             Location blockLoc = PipeTags.parseLocation(pipeTag, world);
@@ -761,11 +759,9 @@ public class PipeManager {
         int count = 0;
         for (Entity entity : world.getEntities()) {
             if (!(entity instanceof ItemDisplay)) continue;
+            if (!PipeTags.isPipeEntity(entity)) continue;
 
-            Set<String> tags = entity.getScoreboardTags();
-            if (!PipeTags.isPipeEntity(tags)) continue;
-
-            String pipeTag = PipeTags.getPipeTag(tags);
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag == null) continue;
 
             Location blockLoc = PipeTags.parseLocation(pipeTag, world);
@@ -880,10 +876,16 @@ public class PipeManager {
         Map<Location, BlockFace> facingByLocation = new HashMap<>();
         Map<Location, PipeVariant> variantByLocation = new HashMap<>();
 
+        int migrated = 0;
         for (Entity entity : chunk.getEntities()) {
             if (!(entity instanceof ItemDisplay)) continue;
 
-            String pipeTag = PipeTags.getPipeTag(entity.getScoreboardTags());
+            // Auto-migrate legacy scoreboard tags to PDC
+            if (PipeTags.migrateIfNeeded(entity)) {
+                migrated++;
+            }
+
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag == null) continue;
 
             Location location = PipeTags.parseLocation(pipeTag, world);
@@ -923,6 +925,11 @@ public class PipeManager {
                 registerPipe(location, facing, uuids, variant);
                 count++;
             }
+        }
+
+        if (migrated > 0) {
+            plugin.getLogger().info("Migrated " + migrated + " pipe display(s) from scoreboard tags to PDC in chunk [" +
+                    chunk.getX() + ", " + chunk.getZ() + "]");
         }
 
         return count;

@@ -126,6 +126,7 @@ public class PipesPlugin extends JavaPlugin {
                 loadItems();
                 recipeManager.registerRecipes();
                 for (PipeManager manager : new ArrayList<>(pipeManagers.values())) {
+                    manager.reloadVariants(variantRegistry);
                     manager.refreshAllDisplays();
                     manager.restartTasks();
                 }

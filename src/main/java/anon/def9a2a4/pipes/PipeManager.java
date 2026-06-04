@@ -806,6 +806,20 @@ public class PipeManager {
         return world;
     }
 
+    /**
+     * Re-resolve variant references for all registered pipes against the current registry.
+     * Called after config reload to replace stale PipeVariant objects in PipeData records.
+     */
+    public void reloadVariants(VariantRegistry registry) {
+        for (Map.Entry<Location, PipeData> entry : pipes.entrySet()) {
+            PipeData data = entry.getValue();
+            PipeVariant fresh = registry.getVariant(data.variant().getId());
+            if (fresh != null && fresh != data.variant()) {
+                entry.setValue(new PipeData(data.facing(), data.displayEntityIds(), fresh));
+            }
+        }
+    }
+
     public void refreshAllDisplays() {
         for (Location location : new ArrayList<>(pipes.keySet())) {
             updateDisplayEntity(location);

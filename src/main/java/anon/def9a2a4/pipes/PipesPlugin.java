@@ -344,12 +344,7 @@ public class PipesPlugin extends JavaPlugin {
 
                 int totalDeleted = manager.deleteAllPipes();
                 if (totalDeleted > 0) {
-                    sender.sendMessage(Component.text("Deleted " + totalDeleted + " pipe(s) in " + world.getName())
-                            .color(NamedTextColor.GRAY));
-                }
-
-                if (totalDeleted > 0) {
-                    sender.sendMessage(Component.text("Deleted " + totalDeleted + " pipe(s) total.")
+                    sender.sendMessage(Component.text("Deleted " + totalDeleted + " pipe(s) in " + world.getName() + ".")
                             .color(NamedTextColor.GREEN));
                 } else {
                     sender.sendMessage(Component.text("No pipes to delete.")

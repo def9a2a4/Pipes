@@ -18,11 +18,8 @@ public class ContainerAdapterRegistry {
     );
 
     public static Optional<ContainerAdapter> findAdapter(Block block) {
-        for (ContainerAdapter adapter : ADAPTERS) {
-            if (adapter.canReceive(block)) {
-                return Optional.of(adapter);
-            }
-        }
-        return Optional.empty();
+        return ADAPTERS.stream()
+            .filter(a -> a.canReceive(block))
+            .findFirst();
     }
 }

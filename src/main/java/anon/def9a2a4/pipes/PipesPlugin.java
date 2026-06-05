@@ -271,14 +271,7 @@ public class PipesPlugin extends JavaPlugin {
                 sender.sendMessage(Component.text("=== Pipes Info ===")
                         .color(NamedTextColor.GOLD));
 
-                // Scope to player's world if applicable, otherwise all worlds
-                List<PipeManager> managersToQuery = new ArrayList<>();
-                if (sender instanceof Player player) {
-                    PipeManager mgr = pipeManagers.get(player.getWorld());
-                    if (mgr != null) managersToQuery.add(mgr);
-                } else {
-                    managersToQuery.addAll(pipeManagers.values());
-                }
+                List<PipeManager> managersToQuery = getQueryableManagers(sender);
 
                 // Pipe counts by variant per world
                 for (PipeManager manager : managersToQuery) {
@@ -475,6 +468,18 @@ public class PipesPlugin extends JavaPlugin {
      */
     public PipeManager getPipeManager(World world) {
         return pipeManagers.get(world);
+    }
+
+    /**
+     * Get pipe managers scoped to the sender: player's world only, or all worlds for console.
+     */
+    private List<PipeManager> getQueryableManagers(CommandSender sender) {
+        if (sender instanceof Player player) {
+            PipeManager mgr = pipeManagers.get(player.getWorld());
+            if (mgr != null) return List.of(mgr);
+            return List.of();
+        }
+        return new ArrayList<>(pipeManagers.values());
     }
 
     private void loadItems() {

@@ -45,18 +45,7 @@ public class VanillaContainerAdapter implements ContainerAdapter {
     public void commitExtract(Block block, ItemStack extracted) {
         if (!(block.getState() instanceof Container container)) return;
         Inventory inv = container.getInventory();
-        int remaining = extracted.getAmount();
-        for (int i = 0; i < inv.getSize() && remaining > 0; i++) {
-            ItemStack slot = inv.getItem(i);
-            if (slot != null && slot.isSimilar(extracted)) {
-                int take = Math.min(slot.getAmount(), remaining);
-                slot.setAmount(slot.getAmount() - take);
-                if (slot.getAmount() <= 0) {
-                    inv.setItem(i, null);
-                }
-                remaining -= take;
-            }
-        }
+        ContainerAdapter.removeFromSlots(inv, extracted, 0, inv.getSize());
     }
 
     @Override

@@ -31,20 +31,20 @@ public class BrewingStandContainerAdapter implements ContainerAdapter {
 
         // Blaze powder goes to fuel slot
         if (item.getType() == Material.BLAZE_POWDER) {
-            return tryInsertSlot(inv, FUEL_SLOT, item);
+            return ContainerAdapter.tryInsertSlot(inv, FUEL_SLOT, item);
         }
 
         // Bottles go to bottle slots (0-2)
         if (isBottle(item)) {
             ItemStack remaining = item;
             for (int i = 0; i < BOTTLE_SLOTS && remaining != null; i++) {
-                remaining = tryInsertSlot(inv, i, remaining);
+                remaining = ContainerAdapter.tryInsertSlot(inv, i, remaining);
             }
             return remaining;
         }
 
         // Everything else goes to ingredient slot
-        return tryInsertSlot(inv, INGREDIENT_SLOT, item);
+        return ContainerAdapter.tryInsertSlot(inv, INGREDIENT_SLOT, item);
     }
 
     @Override
@@ -68,19 +68,7 @@ public class BrewingStandContainerAdapter implements ContainerAdapter {
     @Override
     public void commitExtract(Block block, ItemStack extracted) {
         if (!(block.getState() instanceof BrewingStand stand)) return;
-        BrewerInventory inv = stand.getInventory();
-        int remaining = extracted.getAmount();
-        for (int i = 0; i < BOTTLE_SLOTS && remaining > 0; i++) {
-            ItemStack slot = inv.getItem(i);
-            if (slot != null && slot.isSimilar(extracted)) {
-                int take = Math.min(slot.getAmount(), remaining);
-                slot.setAmount(slot.getAmount() - take);
-                if (slot.getAmount() <= 0) {
-                    inv.setItem(i, null);
-                }
-                remaining -= take;
-            }
-        }
+        ContainerAdapter.removeFromSlots(stand.getInventory(), extracted, 0, BOTTLE_SLOTS);
     }
 
     @Override
@@ -103,24 +91,4 @@ public class BrewingStandContainerAdapter implements ContainerAdapter {
             || type == Material.LINGERING_POTION;
     }
 
-    private ItemStack tryInsertSlot(BrewerInventory inv, int slot, ItemStack item) {
-        ItemStack existing = inv.getItem(slot);
-        if (existing == null || existing.getType().isAir()) {
-            inv.setItem(slot, item.clone());
-            return null;
-        }
-        if (existing.isSimilar(item)) {
-            int space = existing.getMaxStackSize() - existing.getAmount();
-            if (space > 0) {
-                int toAdd = Math.min(space, item.getAmount());
-                existing.setAmount(existing.getAmount() + toAdd);
-                inv.setItem(slot, existing);
-                if (toAdd >= item.getAmount()) return null;
-                ItemStack leftover = item.clone();
-                leftover.setAmount(item.getAmount() - toAdd);
-                return leftover;
-            }
-        }
-        return item;
-    }
 }

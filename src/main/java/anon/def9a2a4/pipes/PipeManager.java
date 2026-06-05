@@ -27,6 +27,7 @@ import anon.def9a2a4.pipes.config.DisplayConfig;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.Random;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -36,12 +37,15 @@ import java.util.UUID;
 
 public class PipeManager {
 
-    private record DestinationResult(Location destination, Location lastPipeLocation, int minItemsPerTransfer) {}
+    private record CachedPath(Location destination, Location lastPipeLocation,
+                               List<Location> pipeChain, int minItemsPerTransfer) {}
 
     private final PipesPlugin plugin;
     private final World world;
     private final Map<Location, PipeData> pipes = new HashMap<>();
-    private final Map<Location, Long> lastTransferTime = new HashMap<>();
+    private final Map<Location, CachedPath> pathCache = new HashMap<>();
+    private final Map<Location, Long> sleepUntil = new HashMap<>();
+    private final Map<Location, Long> deadEndRecheckAt = new HashMap<>();
     private BukkitTask transferTask;
     private BukkitTask particleTask;
 
@@ -51,8 +55,8 @@ public class PipeManager {
     }
 
     public void startTasks() {
-        int fastestInterval = getFastestTransferInterval();
-        transferTask = Bukkit.getScheduler().runTaskTimer(plugin, this::transferAllPipes, 20, fastestInterval);
+        // Task runs every tick; each pipe fires only on its own phase offset
+        transferTask = Bukkit.getScheduler().runTaskTimer(plugin, this::transferAllPipes, 20, 1);
 
         if (plugin.getPipeConfig().isDebugParticles()) {
             int particleInterval = plugin.getPipeConfig().getParticleInterval();
@@ -60,24 +64,16 @@ public class PipeManager {
         }
     }
 
-    private int getFastestTransferInterval() {
-        int fastest = 10;
-        for (PipeVariant variant : plugin.getVariantRegistry().getAllVariants()) {
-            if (variant.getTransferIntervalTicks() < fastest) {
-                fastest = variant.getTransferIntervalTicks();
-            }
-        }
-        return Math.max(1, fastest);
-    }
-
     public void registerPipe(Location location, BlockFace facing, List<UUID> displayEntityIds, PipeVariant variant) {
         pipes.put(normalizeLocation(location), new PipeData(facing, displayEntityIds, variant));
+        pathCache.clear();
     }
 
     public void unregisterPipe(Location location) {
         Location normalized = normalizeLocation(location);
         PipeData data = pipes.remove(normalized);
-        lastTransferTime.remove(normalized);
+        sleepUntil.remove(normalized);
+        pathCache.clear();
 
         // Try to remove all entities by UUID first
         boolean allRemoved = true;
@@ -540,26 +536,52 @@ public class PipeManager {
     }
 
     private void transferAllPipes() {
-        long now = System.currentTimeMillis();
+        long currentTick = Bukkit.getCurrentTick();
         List<Location> toRemove = new ArrayList<>();
 
         for (Map.Entry<Location, PipeData> entry : pipes.entrySet()) {
             Location loc = entry.getKey();
             PipeData data = entry.getValue();
 
-            // Check if enough time has passed for this pipe's variant
-            long intervalMs = data.variant().getTransferIntervalTicks() * 50L;
-            Long lastTime = lastTransferTime.get(loc);
+            // Sleep check
+            Long wakeTick = sleepUntil.get(loc);
+            if (wakeTick != null) {
+                if (currentTick < wakeTick) continue;
+                sleepUntil.remove(loc);
+            }
 
-            if (lastTime == null || (now - lastTime) >= intervalMs) {
-                if (transferItems(loc, data)) {
-                    toRemove.add(loc);
-                }
-                lastTransferTime.put(loc, now);
+            // Phase offset check
+            int intervalTicks = Math.max(1, data.variant().getTransferIntervalTicks());
+            if (!isTransferDue(currentTick, loc, intervalTicks)) continue;
+
+            if (transferItems(loc, data)) {
+                toRemove.add(loc);
             }
         }
 
-        toRemove.forEach(pipes::remove);
+        for (Location loc : toRemove) {
+            unregisterPipe(loc);
+        }
+    }
+
+    private boolean isTransferDue(long currentTick, Location loc, int intervalTicks) {
+        if (intervalTicks <= 1) return true;
+        int hash = Objects.hash(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+        return Math.floorMod(currentTick, intervalTicks) == Math.floorMod(hash, intervalTicks);
+    }
+
+    private void sleepPipe(Location loc, int ticks) {
+        if (ticks <= 0) return;
+        sleepUntil.put(loc, (long) Bukkit.getCurrentTick() + ticks);
+    }
+
+    public void wakeUpPipe(Location location) {
+        sleepUntil.remove(normalizeLocation(location));
+    }
+
+    public void invalidatePathCache() {
+        pathCache.clear();
+        deadEndRecheckAt.clear();
     }
 
     /**
@@ -590,19 +612,22 @@ public class PipeManager {
 
         // Start with this pipe's items per transfer and find minimum along path
         int startingMax = data.variant().getItemsPerTransfer();
-        DestinationResult result = findDestination(pipeLocation, facing, new HashSet<>(), startingMax);
+        CachedPath path = getOrBuildPath(pipeLocation, facing, startingMax);
 
         // Use the minimum from the path
-        int transferAmount = result.minItemsPerTransfer();
+        int transferAmount = path.minItemsPerTransfer();
         int maxToExtract = Math.min(startingMax, transferAmount);
 
         ItemStack toTransfer = sourceAdapter.peekExtract(sourceBlock, maxToExtract);
-        if (toTransfer == null) return false;
+        if (toTransfer == null) {
+            sleepPipe(normalizeLocation(pipeLocation), plugin.getPipeConfig().getSourceEmptySleepTicks());
+            return false;
+        }
 
         boolean transferred = false;
-        if (result.destination() == null) {
+        if (path.destination() == null) {
             // No container destination - drop at the last pipe in the chain
-            Location lastPipeLoc = result.lastPipeLocation();
+            Location lastPipeLoc = path.lastPipeLocation();
             PipeData lastPipeData = getPipeData(lastPipeLoc);
             BlockFace lastPipeFacing = lastPipeData != null ? lastPipeData.facing() : facing;
 
@@ -638,7 +663,7 @@ public class PipeManager {
 
             transferred = true;
         } else {
-            Block destBlock = result.destination().getBlock();
+            Block destBlock = path.destination().getBlock();
             ContainerAdapter destAdapter = ContainerAdapterRegistry.findAdapter(destBlock).orElse(null);
             if (destAdapter != null) {
                 ItemStack leftover = destAdapter.insert(destBlock, toTransfer);
@@ -651,6 +676,9 @@ public class PipeManager {
                         ItemStack partialExtract = toTransfer.clone();
                         partialExtract.setAmount(insertedAmount);
                         sourceAdapter.commitExtract(sourceBlock, partialExtract);
+                    } else {
+                        // Destination completely full
+                        sleepPipe(normalizeLocation(pipeLocation), plugin.getPipeConfig().getDestFullSleepTicks());
                     }
                     return false;
                 }
@@ -663,40 +691,94 @@ public class PipeManager {
         return false;
     }
 
-    private DestinationResult findDestination(Location pipeLocation, BlockFace facing,
-                                               Set<Location> visited, int currentMinItems) {
-        Block nextBlock = pipeLocation.getBlock().getRelative(facing);
+    private CachedPath getOrBuildPath(Location pipeLocation, BlockFace facing, int startingMax) {
+        Location key = normalizeLocation(pipeLocation);
+        CachedPath cached = pathCache.get(key);
+        if (cached != null && isPathStillValid(key, cached)) {
+            return cached;
+        }
+
+        CachedPath fresh = findDestination(pipeLocation, facing, new HashSet<>(), new ArrayList<>(), startingMax);
+        pathCache.put(key, fresh);
+        return fresh;
+    }
+
+    private boolean isPathStillValid(Location key, CachedPath path) {
+        // Verify all pipes in the chain still exist
+        for (Location pipeLoc : path.pipeChain()) {
+            if (!isPipe(pipeLoc)) return false;
+        }
+
+        if (path.destination() == null) {
+            // Dead-end: use cooldown to avoid rechecking every tick
+            int recheckTicks = plugin.getPipeConfig().getEndRecheckSleepTicks();
+            if (recheckTicks > 0) {
+                Long recheckAt = deadEndRecheckAt.get(key);
+                long currentTick = Bukkit.getCurrentTick();
+                if (recheckAt != null && currentTick < recheckAt) {
+                    return true; // Still in cooldown, assume valid
+                }
+            }
+
+            // Check if a container or pipe appeared at the end
+            PipeData lastPipeData = getPipeData(path.lastPipeLocation());
+            if (lastPipeData != null) {
+                Block endBlock = path.lastPipeLocation().getBlock().getRelative(lastPipeData.facing());
+                if (ContainerAdapterRegistry.findAdapter(endBlock).isPresent()) return false;
+                if (getPipeData(normalizeLocation(endBlock.getLocation())) != null) return false;
+            }
+
+            // Still a dead-end, reset cooldown
+            if (recheckTicks > 0) {
+                deadEndRecheckAt.put(key, (long) Bukkit.getCurrentTick() + recheckTicks);
+            }
+            return true;
+        }
+
+        // Verify destination still has a container
+        Block destBlock = path.destination().getBlock();
+        return ContainerAdapterRegistry.findAdapter(destBlock).isPresent();
+    }
+
+    private CachedPath findDestination(Location pipeLocation, BlockFace facing,
+                                        Set<Location> visited, List<Location> chain, int currentMinItems) {
+        Location normalized = normalizeLocation(pipeLocation);
+        chain.add(normalized);
+
+        PipeData selfData = getPipeData(normalized);
+        if (selfData != null) {
+            currentMinItems = Math.min(currentMinItems, selfData.variant().getItemsPerTransfer());
+        }
+
+        Block nextBlock = normalized.getBlock().getRelative(facing);
         Location nextLoc = normalizeLocation(nextBlock.getLocation());
 
         if (visited.contains(nextLoc)) {
-            return new DestinationResult(null, pipeLocation, currentMinItems);
+            return new CachedPath(null, normalized, chain, currentMinItems);
         }
         visited.add(nextLoc);
 
         if (ContainerAdapterRegistry.findAdapter(nextBlock).isPresent()) {
-            return new DestinationResult(nextLoc, pipeLocation, currentMinItems);
+            return new CachedPath(nextLoc, normalized, chain, currentMinItems);
         }
 
         PipeData nextPipeData = getPipeData(nextLoc);
         if (nextPipeData != null) {
-            // Calculate new minimum based on next pipe's settings
-            int nextMin = Math.min(currentMinItems, nextPipeData.variant().getItemsPerTransfer());
-
-            // If the next pipe is facing INTO this pipe (head-to-head), drop the item
             if (nextPipeData.facing() == facing.getOppositeFace()) {
-                return new DestinationResult(null, pipeLocation, currentMinItems);
+                return new CachedPath(null, normalized, chain, currentMinItems);
             }
-            // Otherwise, follow the next pipe's direction (same direction, perpendicular, etc.)
-            return findDestination(nextLoc, nextPipeData.facing(), visited, nextMin);
+            return findDestination(nextLoc, nextPipeData.facing(), visited, chain, currentMinItems);
         }
 
-        return new DestinationResult(null, pipeLocation, currentMinItems);
+        return new CachedPath(null, normalized, chain, currentMinItems);
     }
 
     public void shutdown() {
         stopTasks();
         pipes.clear();
-        lastTransferTime.clear();
+        pathCache.clear();
+        sleepUntil.clear();
+        deadEndRecheckAt.clear();
     }
 
     /**
@@ -812,6 +894,9 @@ public class PipeManager {
                 entry.setValue(new PipeData(data.facing(), data.displayEntityIds(), fresh));
             }
         }
+        pathCache.clear();
+        sleepUntil.clear();
+        deadEndRecheckAt.clear();
     }
 
     public void refreshAllDisplays() {
@@ -939,11 +1024,13 @@ public class PipeManager {
             int locChunkZ = loc.getBlockZ() >> 4;
 
             if (locChunkX == chunkX && locChunkZ == chunkZ) {
-                lastTransferTime.remove(loc);
+                sleepUntil.remove(loc);
+                deadEndRecheckAt.remove(loc);
                 return true;
             }
             return false;
         });
+        pathCache.clear();
     }
 
     public BlockFace getFacingFromSkull(Block block) {

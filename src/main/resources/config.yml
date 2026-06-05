@@ -22,6 +22,13 @@ recipes:
 #   list:
 #     - world_the_end
 
+# Performance tuning
+performance:
+  sleep:
+    source-empty-ticks: 60    # Ticks to sleep when source container is empty (0 to disable)
+    dest-full-ticks: 80       # Ticks to sleep when destination is full (0 to disable)
+    end-recheck-ticks: 40     # Ticks before rechecking a dead-end path for new containers
+
 # Global settings
 global:
   debug:

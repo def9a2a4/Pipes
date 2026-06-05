@@ -216,6 +216,9 @@ public class PipeListener implements Listener {
         PipeManager manager = getManager(blockLocation.getWorld());
         if (manager == null) return;
 
+        // A block changed — invalidate all cached paths
+        manager.invalidatePathCache();
+
         BlockFace[] faces = {BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST, BlockFace.UP, BlockFace.DOWN};
         Block block = blockLocation.getBlock();
 
@@ -227,6 +230,7 @@ public class PipeListener implements Listener {
                 // Update if block is at pipe's source (opposite of facing) or destination (facing direction)
                 if (face == pipeFacing || face == pipeFacing.getOppositeFace()) {
                     manager.updateDisplayEntity(adjacentLoc);
+                    manager.wakeUpPipe(adjacentLoc);
                 }
             }
         }

@@ -25,6 +25,11 @@ public class PipeConfig {
     private final boolean worldFilterIsAllowlist;
     private final Set<String> worldFilterList;
 
+    // Performance settings
+    private final int sourceEmptySleepTicks;
+    private final int destFullSleepTicks;
+    private final int endRecheckSleepTicks;
+
     public PipeConfig(FileConfiguration config) {
         this.debugParticles = config.getBoolean("global.debug.particles", false);
         this.particleInterval = config.getInt("global.debug.particle-interval", 10);
@@ -46,6 +51,11 @@ public class PipeConfig {
             this.worldFilterIsAllowlist = false;
             this.worldFilterList = Set.of();
         }
+
+        // Performance settings
+        this.sourceEmptySleepTicks = config.getInt("performance.sleep.source-empty-ticks", 60);
+        this.destFullSleepTicks = config.getInt("performance.sleep.dest-full-ticks", 80);
+        this.endRecheckSleepTicks = config.getInt("performance.sleep.end-recheck-ticks", 40);
     }
 
     public boolean isDebugParticles() {
@@ -71,6 +81,18 @@ public class PipeConfig {
     public boolean isUnlockEnabled() {
         return unlockAdvancement != null && !unlockAdvancement.isEmpty()
                && !unlockAdvancement.equalsIgnoreCase("none");
+    }
+
+    public int getSourceEmptySleepTicks() {
+        return sourceEmptySleepTicks;
+    }
+
+    public int getDestFullSleepTicks() {
+        return destFullSleepTicks;
+    }
+
+    public int getEndRecheckSleepTicks() {
+        return endRecheckSleepTicks;
     }
 
     /**

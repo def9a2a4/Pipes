@@ -5,6 +5,7 @@
 - **Per-world PipeManager** — each world gets its own PipeManager with independent lifecycle; config to enable/disable pipes per world
 - **Container adapter system** — new `ContainerAdapter` interface with implementations for furnaces (vanilla hopper parity) and brewing stands (no extraction during brewing)
 - **Path caching & sleep/throttle** — cached pipe paths with full-invalidation on topology changes, sleep for idle pipes (empty source / full destination), dead-end recheck cooldown, transfer phase offset to spread load across ticks
+- **Creative pick-block** — middle-clicking a pipe in creative mode now gives the correct pipe item (compatible with HeadSmith)
 - **CI pipeline** — GitHub Actions build + server startup test matrix across Paper 1.21 through 26.1.2
 
 ## Fixes

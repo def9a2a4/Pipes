@@ -1,28 +1,35 @@
 package anon.def9a2a4.pipes;
 
 import org.bukkit.Location;
+import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.block.BlockFace;
-
-import java.util.Set;
+import org.bukkit.entity.Entity;
+import org.bukkit.persistence.PersistentDataType;
 
 /**
- * Utility class for scoreboard tags used to identify pipe display entities.
+ * Utility class for pipe display entity identification via PersistentDataContainer.
+ * Reads PDC first, falls back to legacy scoreboard tags for backwards compatibility.
  *
- * Tag format: pipe:{variant_id}:{x}_{y}_{z}_{facing}
+ * Tag value format: {variant_id}:{x}_{y}_{z}_{facing}[_dir|_head]
+ * Legacy scoreboard tag format: pipe:{variant_id}:{x}_{y}_{z}_{facing}[_dir]
  */
 public final class PipeTags {
-    public static final String TAG_PREFIX = "pipe:";
+    public static final NamespacedKey PIPE_TAG_KEY = new NamespacedKey("pipe", "tag");
+
+    /** Legacy scoreboard tag prefix (pre-PDC migration) */
+    public static final String LEGACY_TAG_PREFIX = "pipe:";
 
     public static final String DIRECTIONAL_SUFFIX = "_dir";
+    public static final String HEAD_DISPLAY_SUFFIX = "_head";
 
     private PipeTags() {}
 
     /**
-     * Create a tag for a pipe at the given location with the given facing direction and variant.
+     * Create a tag value for a pipe at the given location.
      */
     public static String createTag(Location location, BlockFace facing, PipeVariant variant) {
-        return TAG_PREFIX + variant.getId() + ":" +
+        return variant.getId() + ":" +
                 location.getBlockX() + "_" +
                 location.getBlockY() + "_" +
                 location.getBlockZ() + "_" +
@@ -37,6 +44,13 @@ public final class PipeTags {
     }
 
     /**
+     * Create a tag for an extra head display entity (down-facing corner pipes).
+     */
+    public static String createHeadDisplayTag(Location location, BlockFace facing, PipeVariant variant) {
+        return createTag(location, facing, variant) + HEAD_DISPLAY_SUFFIX;
+    }
+
+    /**
      * Check if a tag is for a directional display entity.
      */
     public static boolean isDirectionalTag(String tag) {
@@ -44,11 +58,23 @@ public final class PipeTags {
     }
 
     /**
-     * Check if an entity has any pipe tag.
+     * Check if a tag is for a head display entity.
      */
-    public static boolean isPipeEntity(Set<String> tags) {
-        for (String tag : tags) {
-            if (isPipeTag(tag)) {
+    public static boolean isHeadDisplayTag(String tag) {
+        return tag != null && tag.endsWith(HEAD_DISPLAY_SUFFIX);
+    }
+
+    /**
+     * Check if an entity is a pipe display entity.
+     * Checks PDC first, falls back to legacy scoreboard tags.
+     */
+    public static boolean isPipeEntity(Entity entity) {
+        if (entity.getPersistentDataContainer().has(PIPE_TAG_KEY, PersistentDataType.STRING)) {
+            return true;
+        }
+        // Legacy fallback
+        for (String tag : entity.getScoreboardTags()) {
+            if (tag.startsWith(LEGACY_TAG_PREFIX)) {
                 return true;
             }
         }
@@ -56,76 +82,86 @@ public final class PipeTags {
     }
 
     /**
-     * Check if a single tag is a pipe tag.
+     * Get the pipe tag value from an entity.
+     * Checks PDC first, falls back to legacy scoreboard tags.
+     * Returns the tag value WITHOUT the legacy "pipe:" prefix (normalized).
      */
-    public static boolean isPipeTag(String tag) {
-        return tag != null && tag.startsWith(TAG_PREFIX);
-    }
+    public static String getPipeTag(Entity entity) {
+        String pdcTag = entity.getPersistentDataContainer().get(PIPE_TAG_KEY, PersistentDataType.STRING);
+        if (pdcTag != null) return pdcTag;
 
-    /**
-     * Extract the pipe tag from an entity's tags.
-     */
-    public static String getPipeTag(Set<String> tags) {
-        for (String tag : tags) {
-            if (isPipeTag(tag)) {
-                return tag;
+        // Legacy fallback: strip the "pipe:" prefix to normalize
+        for (String tag : entity.getScoreboardTags()) {
+            if (tag.startsWith(LEGACY_TAG_PREFIX)) {
+                return tag.substring(LEGACY_TAG_PREFIX.length());
             }
         }
         return null;
     }
 
     /**
-     * Parse the variant ID from a tag.
-     * Returns null if the tag doesn't match the expected format.
+     * Write a pipe tag to an entity's PDC and remove any legacy scoreboard tag.
+     */
+    public static void addPipeTag(Entity entity, String tagValue) {
+        entity.getPersistentDataContainer().set(PIPE_TAG_KEY, PersistentDataType.STRING, tagValue);
+        // Clean up legacy scoreboard tag if present
+        entity.getScoreboardTags().removeIf(tag -> tag.startsWith(LEGACY_TAG_PREFIX));
+    }
+
+    /**
+     * Migrate an entity from legacy scoreboard tags to PDC if needed.
+     * @return true if migration occurred
+     */
+    public static boolean migrateIfNeeded(Entity entity) {
+        if (entity.getPersistentDataContainer().has(PIPE_TAG_KEY, PersistentDataType.STRING)) {
+            return false; // Already migrated
+        }
+
+        for (String tag : entity.getScoreboardTags()) {
+            if (tag.startsWith(LEGACY_TAG_PREFIX)) {
+                String tagValue = tag.substring(LEGACY_TAG_PREFIX.length());
+                entity.getPersistentDataContainer().set(PIPE_TAG_KEY, PersistentDataType.STRING, tagValue);
+                entity.removeScoreboardTag(tag);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Parse the variant ID from a tag value.
      */
     public static String parseVariantId(String tag) {
         if (tag == null) return null;
 
-        // Strip directional suffix first
-        String workingTag = tag;
-        if (workingTag.endsWith(DIRECTIONAL_SUFFIX)) {
-            workingTag = workingTag.substring(0, workingTag.length() - DIRECTIONAL_SUFFIX.length());
-        }
+        String workingTag = stripDisplaySuffix(tag);
 
-        // Format: pipe:{variant_id}:{data}
-        if (workingTag.startsWith(TAG_PREFIX)) {
-            String remainder = workingTag.substring(TAG_PREFIX.length());
-            int colonIdx = remainder.indexOf(':');
-            if (colonIdx > 0) {
-                return remainder.substring(0, colonIdx);
-            }
+        int colonIdx = workingTag.indexOf(':');
+        if (colonIdx > 0) {
+            return workingTag.substring(0, colonIdx);
         }
 
         return null;
     }
 
     /**
-     * Get the data portion of a tag (coordinates and facing).
+     * Get the data portion of a tag value (coordinates and facing).
      */
     private static String getTagData(String tag) {
         if (tag == null) return null;
 
-        // Strip directional suffix first
-        String workingTag = tag;
-        if (workingTag.endsWith(DIRECTIONAL_SUFFIX)) {
-            workingTag = workingTag.substring(0, workingTag.length() - DIRECTIONAL_SUFFIX.length());
-        }
+        String workingTag = stripDisplaySuffix(tag);
 
-        // Format: pipe:{variant_id}:{data}
-        if (workingTag.startsWith(TAG_PREFIX)) {
-            String remainder = workingTag.substring(TAG_PREFIX.length());
-            int colonIdx = remainder.indexOf(':');
-            if (colonIdx > 0 && colonIdx < remainder.length() - 1) {
-                return remainder.substring(colonIdx + 1);
-            }
+        int colonIdx = workingTag.indexOf(':');
+        if (colonIdx > 0 && colonIdx < workingTag.length() - 1) {
+            return workingTag.substring(colonIdx + 1);
         }
 
         return null;
     }
 
     /**
-     * Parse location from a pipe tag.
-     * Returns null if parsing fails.
+     * Parse location from a pipe tag value.
      */
     public static Location parseLocation(String tag, World world) {
         String data = getTagData(tag);
@@ -145,8 +181,7 @@ public final class PipeTags {
     }
 
     /**
-     * Parse facing direction from a pipe tag.
-     * Returns null if parsing fails.
+     * Parse facing direction from a pipe tag value.
      */
     public static BlockFace parseFacing(String tag) {
         String data = getTagData(tag);
@@ -163,7 +198,7 @@ public final class PipeTags {
     }
 
     /**
-     * Check if a pipe tag matches the given location.
+     * Check if a pipe tag value matches the given location.
      */
     public static boolean matchesLocation(String tag, Location location) {
         Location parsed = parseLocation(tag, location.getWorld());
@@ -172,5 +207,16 @@ public final class PipeTags {
         return parsed.getBlockX() == location.getBlockX() &&
                 parsed.getBlockY() == location.getBlockY() &&
                 parsed.getBlockZ() == location.getBlockZ();
+    }
+
+    private static String stripDisplaySuffix(String tag) {
+        if (tag == null) return null;
+        if (tag.endsWith(HEAD_DISPLAY_SUFFIX)) {
+            return tag.substring(0, tag.length() - HEAD_DISPLAY_SUFFIX.length());
+        }
+        if (tag.endsWith(DIRECTIONAL_SUFFIX)) {
+            return tag.substring(0, tag.length() - DIRECTIONAL_SUFFIX.length());
+        }
+        return tag;
     }
 }

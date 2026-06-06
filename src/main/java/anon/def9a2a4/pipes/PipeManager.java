@@ -7,12 +7,13 @@ import org.bukkit.Particle;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
-import org.bukkit.block.Container;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.ItemDisplay;
-import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+
+import anon.def9a2a4.pipes.adapter.ContainerAdapter;
+import anon.def9a2a4.pipes.adapter.ContainerAdapterRegistry;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Transformation;
 import org.bukkit.util.Vector;
@@ -26,6 +27,7 @@ import anon.def9a2a4.pipes.config.DisplayConfig;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.Random;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -35,22 +37,27 @@ import java.util.UUID;
 
 public class PipeManager {
 
-    private record DestinationResult(Location destination, Location lastPipeLocation, int minItemsPerTransfer) {}
+    private record CachedPath(Location destination, Location lastPipeLocation,
+                               List<Location> pipeChain, int minItemsPerTransfer) {}
 
     private final PipesPlugin plugin;
+    private final World world;
     private final Map<Location, PipeData> pipes = new HashMap<>();
-    private final Map<Location, Long> lastTransferTime = new HashMap<>();
+    private final Map<Location, CachedPath> pathCache = new HashMap<>();
+    private final Map<Location, Long> sleepUntil = new HashMap<>();
+    private final Map<Location, Long> deadEndRecheckAt = new HashMap<>();
+    private final Random random = new Random();
     private BukkitTask transferTask;
     private BukkitTask particleTask;
 
-    public PipeManager(PipesPlugin plugin) {
+    public PipeManager(PipesPlugin plugin, World world) {
         this.plugin = plugin;
+        this.world = world;
     }
 
     public void startTasks() {
-        // Use fastest interval among all variants for the task
-        int fastestInterval = getFastestTransferInterval();
-        transferTask = Bukkit.getScheduler().runTaskTimer(plugin, this::transferAllPipes, 20, fastestInterval);
+        // Task runs every tick; each pipe fires only on its own phase offset
+        transferTask = Bukkit.getScheduler().runTaskTimer(plugin, this::transferAllPipes, 20, 1);
 
         if (plugin.getPipeConfig().isDebugParticles()) {
             int particleInterval = plugin.getPipeConfig().getParticleInterval();
@@ -58,27 +65,16 @@ public class PipeManager {
         }
     }
 
-    private int getFastestTransferInterval() {
-        int fastest = 10; // Default
-        for (PipeVariant variant : plugin.getVariantRegistry().getAllVariants()) {
-            if (variant.getTransferIntervalTicks() < fastest) {
-                fastest = variant.getTransferIntervalTicks();
-            }
-        }
-        return Math.max(1, fastest);
-    }
-
     public void registerPipe(Location location, BlockFace facing, List<UUID> displayEntityIds, PipeVariant variant) {
         pipes.put(normalizeLocation(location), new PipeData(facing, displayEntityIds, variant));
+        pathCache.clear();
     }
 
     public void unregisterPipe(Location location) {
         Location normalized = normalizeLocation(location);
         PipeData data = pipes.remove(normalized);
-        lastTransferTime.remove(normalized);
-
-        World world = location.getWorld();
-        if (world == null) return;
+        sleepUntil.remove(normalized);
+        pathCache.clear();
 
         // Try to remove all entities by UUID first
         boolean allRemoved = true;
@@ -102,9 +98,6 @@ public class PipeManager {
     }
 
     private void removeDisplaysByTag(Location location) {
-        World world = location.getWorld();
-        if (world == null) return;
-
         Collection<Entity> nearby = world.getNearbyEntities(
                 location.clone().add(0.5, 0.5, 0.5),
                 1.0, 1.0, 1.0,
@@ -113,7 +106,7 @@ public class PipeManager {
 
         // Remove ALL matching entities, not just the first one
         for (Entity entity : nearby) {
-            String pipeTag = PipeTags.getPipeTag(entity.getScoreboardTags());
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag != null && PipeTags.matchesLocation(pipeTag, location)) {
                 entity.remove();
             }
@@ -133,12 +126,9 @@ public class PipeManager {
         PipeData data = pipes.get(normalized);
         if (data == null || data.displayEntityIds() == null || data.displayEntityIds().isEmpty()) return;
 
-        World world = pipeLocation.getWorld();
-        if (world == null) return;
-
         // For corner pipes, we need to update both displays differently
         if (data.variant().getBehaviorType() == BehaviorType.CORNER) {
-            updateCornerDisplayEntities(normalized, data, world);
+            updateCornerDisplayEntities(normalized, data);
         } else {
             // Regular pipes have single display
             UUID uuid = data.displayEntityIds().get(0);
@@ -150,7 +140,7 @@ public class PipeManager {
         }
     }
 
-    private void updateCornerDisplayEntities(Location normalized, PipeData data, World world) {
+    private void updateCornerDisplayEntities(Location normalized, PipeData data) {
         // Find entities by tag to determine which is directional
         Collection<Entity> nearby = world.getNearbyEntities(
                 normalized.clone().add(0.5, 0.5, 0.5),
@@ -159,7 +149,7 @@ public class PipeManager {
         );
 
         for (Entity entity : nearby) {
-            String pipeTag = PipeTags.getPipeTag(entity.getScoreboardTags());
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag != null && PipeTags.matchesLocation(pipeTag, normalized)) {
                 ItemDisplay display = (ItemDisplay) entity;
                 if (PipeTags.isDirectionalTag(pipeTag)) {
@@ -176,9 +166,6 @@ public class PipeManager {
     }
 
     public List<ItemDisplay> spawnDisplayEntities(Location location, BlockFace facing, PipeVariant variant) {
-        World world = location.getWorld();
-        if (world == null) return List.of();
-
         List<ItemDisplay> displays = new ArrayList<>();
         Location spawnLoc = location.clone().add(0.5, 0.5, 0.5);
 
@@ -189,7 +176,7 @@ public class PipeManager {
         ItemDisplay mainDisplay = world.spawn(spawnLoc, ItemDisplay.class, entity -> {
             entity.setItemStack(pipeItem);
             entity.setPersistent(true);
-            entity.addScoreboardTag(PipeTags.createTag(location, facing, variant));
+            PipeTags.addPipeTag(entity, PipeTags.createTag(location, facing, variant));
             entity.setTransformation(transformation);
         });
         displays.add(mainDisplay);
@@ -203,7 +190,7 @@ public class PipeManager {
             ItemDisplay directionalDisplay = world.spawn(spawnLoc, ItemDisplay.class, entity -> {
                 entity.setItemStack(directionalItem);
                 entity.setPersistent(true);
-                entity.addScoreboardTag(PipeTags.createDirectionalTag(location, facing, variant));
+                PipeTags.addPipeTag(entity, PipeTags.createDirectionalTag(location, facing, variant));
                 entity.setTransformation(directionalTransformation);
             });
             displays.add(directionalDisplay);
@@ -256,7 +243,7 @@ public class PipeManager {
         // Check container types
         if (isChest(sourceBlock)) return "chest";
         if (isHopper(sourceBlock)) return "hopper";
-        if (sourceBlock.getState() instanceof Container) return "container";
+        if (ContainerAdapterRegistry.findAdapter(sourceBlock).isPresent()) return "container";
         if (sourceBlock.getType().isAir() || !sourceBlock.getType().isSolid()) return "air";
         return "block";
     }
@@ -286,7 +273,7 @@ public class PipeManager {
 
         if (isChest(destBlock)) return "chest";
         if (isHopper(destBlock)) return "hopper";
-        if (destBlock.getState() instanceof Container) return "container";
+        if (ContainerAdapterRegistry.findAdapter(destBlock).isPresent()) return "container";
         if (destBlock.getType().isAir() || !destBlock.getType().isSolid()) return "air";
         return "block";
     }
@@ -537,43 +524,65 @@ public class PipeManager {
     }
 
     private void spawnDebugParticles() {
-        for (Map.Entry<Location, PipeData> entry : pipes.entrySet()) {
-            Location loc = entry.getKey();
-            World world = loc.getWorld();
-            if (world != null) {
-                world.spawnParticle(
-                        Particle.DUST,
-                        loc.clone().add(0.5, 0.5, 0.5),
-                        3,
-                        0.2, 0.2, 0.2,
-                        0,
-                        new Particle.DustOptions(org.bukkit.Color.fromRGB(255, 100, 50), 1.0f)
-                );
-            }
+        for (Location loc : pipes.keySet()) {
+            world.spawnParticle(
+                    Particle.DUST,
+                    loc.clone().add(0.5, 0.5, 0.5),
+                    3,
+                    0.2, 0.2, 0.2,
+                    0,
+                    new Particle.DustOptions(org.bukkit.Color.fromRGB(255, 100, 50), 1.0f)
+            );
         }
     }
 
     private void transferAllPipes() {
-        long now = System.currentTimeMillis();
+        long currentTick = Bukkit.getCurrentTick();
         List<Location> toRemove = new ArrayList<>();
 
         for (Map.Entry<Location, PipeData> entry : pipes.entrySet()) {
             Location loc = entry.getKey();
             PipeData data = entry.getValue();
 
-            // Check if enough time has passed for this pipe's variant
-            long intervalMs = data.variant().getTransferIntervalTicks() * 50L;
-            Long lastTime = lastTransferTime.get(loc);
+            // Sleep check
+            Long wakeTick = sleepUntil.get(loc);
+            if (wakeTick != null) {
+                if (currentTick < wakeTick) continue;
+                sleepUntil.remove(loc);
+            }
 
-            if (lastTime == null || (now - lastTime) >= intervalMs) {
-                if (transferItems(loc, data)) {
-                    toRemove.add(loc);
-                }
-                lastTransferTime.put(loc, now);
+            // Phase offset check
+            int intervalTicks = Math.max(1, data.variant().getTransferIntervalTicks());
+            if (!isTransferDue(currentTick, loc, intervalTicks)) continue;
+
+            if (transferItems(loc, data)) {
+                toRemove.add(loc);
             }
         }
 
-        toRemove.forEach(pipes::remove);
+        for (Location loc : toRemove) {
+            unregisterPipe(loc);
+        }
+    }
+
+    private boolean isTransferDue(long currentTick, Location loc, int intervalTicks) {
+        if (intervalTicks <= 1) return true;
+        int hash = Objects.hash(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+        return Math.floorMod(currentTick, intervalTicks) == Math.floorMod(hash, intervalTicks);
+    }
+
+    private void sleepPipe(Location loc, int ticks) {
+        if (ticks <= 0) return;
+        sleepUntil.put(loc, (long) Bukkit.getCurrentTick() + ticks);
+    }
+
+    public void wakeUpPipe(Location location) {
+        sleepUntil.remove(normalizeLocation(location));
+    }
+
+    public void invalidatePathCache() {
+        pathCache.clear();
+        deadEndRecheckAt.clear();
     }
 
     /**
@@ -597,37 +606,27 @@ public class PipeManager {
         BlockFace sourceDirection = facing.getOppositeFace();
 
         Block sourceBlock = pipeBlock.getRelative(sourceDirection);
-        if (!(sourceBlock.getState() instanceof Container sourceContainer)) {
+        ContainerAdapter sourceAdapter = ContainerAdapterRegistry.findAdapter(sourceBlock).orElse(null);
+        if (sourceAdapter == null) {
             return false;
         }
 
-        Inventory sourceInv = sourceContainer.getInventory();
-        ItemStack toTransfer = null;
-        int sourceSlot = -1;
-
-        for (int i = 0; i < sourceInv.getSize(); i++) {
-            ItemStack item = sourceInv.getItem(i);
-            if (item != null && !item.getType().isAir()) {
-                toTransfer = item.clone();
-                sourceSlot = i;
-                break;
-            }
-        }
-
-        if (toTransfer == null) return false;
-
         // Start with this pipe's items per transfer and find minimum along path
         int startingMax = data.variant().getItemsPerTransfer();
-        DestinationResult result = findDestination(pipeLocation, facing, new HashSet<>(), startingMax);
+        CachedPath path = getOrBuildPath(pipeLocation, facing, startingMax);
 
-        // Use the minimum from the path
-        int transferAmount = result.minItemsPerTransfer();
-        toTransfer.setAmount(Math.min(transferAmount, toTransfer.getAmount()));
+        int maxToExtract = path.minItemsPerTransfer();
+
+        ItemStack toTransfer = sourceAdapter.peekExtract(sourceBlock, maxToExtract);
+        if (toTransfer == null) {
+            sleepPipe(normalizeLocation(pipeLocation), plugin.getPipeConfig().getSourceEmptySleepTicks());
+            return false;
+        }
 
         boolean transferred = false;
-        if (result.destination() == null) {
+        if (path.destination() == null) {
             // No container destination - drop at the last pipe in the chain
-            Location lastPipeLoc = result.lastPipeLocation();
+            Location lastPipeLoc = path.lastPipeLocation();
             PipeData lastPipeData = getPipeData(lastPipeLoc);
             BlockFace lastPipeFacing = lastPipeData != null ? lastPipeData.facing() : facing;
 
@@ -644,13 +643,12 @@ public class PipeManager {
             }
 
             // Spawn item with velocity set during spawn to avoid dropItem's default velocity
-            Random random = new Random();
             double baseSpeed = (lastPipeFacing == BlockFace.DOWN) ? 0 : 0.25;
             double randomSpread = 0.05;
             final ItemStack finalTransfer = toTransfer;
             BlockFace finalFacing = lastPipeFacing;
 
-            Item item = lastPipeLoc.getWorld().spawn(dropLoc, Item.class, spawnedItem -> {
+            world.spawn(dropLoc, Item.class, spawnedItem -> {
                 spawnedItem.setItemStack(finalTransfer);
 
                 Vector velocity = new Vector(
@@ -663,78 +661,136 @@ public class PipeManager {
 
             transferred = true;
         } else {
-            Block destBlock = result.destination().getBlock();
-            if (destBlock.getState() instanceof Container destContainer) {
-                HashMap<Integer, ItemStack> leftover = destContainer.getInventory().addItem(toTransfer);
-                if (leftover.isEmpty()) {
+            Block destBlock = path.destination().getBlock();
+            ContainerAdapter destAdapter = ContainerAdapterRegistry.findAdapter(destBlock).orElse(null);
+            if (destAdapter != null) {
+                ItemStack leftover = destAdapter.insert(destBlock, toTransfer);
+                if (leftover == null) {
                     transferred = true;
+                } else {
+                    // Partial insert: only commit what was actually inserted
+                    int insertedAmount = toTransfer.getAmount() - leftover.getAmount();
+                    if (insertedAmount > 0) {
+                        ItemStack partialExtract = toTransfer.clone();
+                        partialExtract.setAmount(insertedAmount);
+                        sourceAdapter.commitExtract(sourceBlock, partialExtract);
+                    } else {
+                        // Destination completely full
+                        sleepPipe(normalizeLocation(pipeLocation), plugin.getPipeConfig().getDestFullSleepTicks());
+                    }
+                    return false;
                 }
             }
         }
 
         if (transferred) {
-            ItemStack sourceItem = sourceInv.getItem(sourceSlot);
-            if (sourceItem != null) {
-                sourceItem.setAmount(sourceItem.getAmount() - toTransfer.getAmount());
-                if (sourceItem.getAmount() <= 0) {
-                    sourceInv.setItem(sourceSlot, null);
-                }
-            }
+            sourceAdapter.commitExtract(sourceBlock, toTransfer);
         }
         return false;
     }
 
-    private DestinationResult findDestination(Location pipeLocation, BlockFace facing,
-                                               Set<Location> visited, int currentMinItems) {
-        Block nextBlock = pipeLocation.getBlock().getRelative(facing);
+    private CachedPath getOrBuildPath(Location pipeLocation, BlockFace facing, int startingMax) {
+        Location key = normalizeLocation(pipeLocation);
+        CachedPath cached = pathCache.get(key);
+        if (cached != null && isPathStillValid(key, cached)) {
+            return cached;
+        }
+
+        CachedPath fresh = findDestination(pipeLocation, facing, new HashSet<>(), new ArrayList<>(), startingMax);
+        pathCache.put(key, fresh);
+        return fresh;
+    }
+
+    private boolean isPathStillValid(Location key, CachedPath path) {
+        // Verify all pipes in the chain still exist
+        for (Location pipeLoc : path.pipeChain()) {
+            if (!isPipe(pipeLoc)) return false;
+        }
+
+        if (path.destination() == null) {
+            // Dead-end: use cooldown to avoid rechecking every tick
+            int recheckTicks = plugin.getPipeConfig().getEndRecheckSleepTicks();
+            if (recheckTicks > 0) {
+                Long recheckAt = deadEndRecheckAt.get(key);
+                long currentTick = Bukkit.getCurrentTick();
+                if (recheckAt != null && currentTick < recheckAt) {
+                    return true; // Still in cooldown, assume valid
+                }
+            }
+
+            // Check if a container or pipe appeared at the end
+            PipeData lastPipeData = getPipeData(path.lastPipeLocation());
+            if (lastPipeData != null) {
+                Block endBlock = path.lastPipeLocation().getBlock().getRelative(lastPipeData.facing());
+                if (ContainerAdapterRegistry.findAdapter(endBlock).isPresent()) return false;
+                if (getPipeData(normalizeLocation(endBlock.getLocation())) != null) return false;
+            }
+
+            // Still a dead-end, reset cooldown
+            if (recheckTicks > 0) {
+                deadEndRecheckAt.put(key, (long) Bukkit.getCurrentTick() + recheckTicks);
+            }
+            return true;
+        }
+
+        // Verify destination still has a container
+        Block destBlock = path.destination().getBlock();
+        return ContainerAdapterRegistry.findAdapter(destBlock).isPresent();
+    }
+
+    private CachedPath findDestination(Location pipeLocation, BlockFace facing,
+                                        Set<Location> visited, List<Location> chain, int currentMinItems) {
+        Location normalized = normalizeLocation(pipeLocation);
+        chain.add(normalized);
+
+        PipeData selfData = getPipeData(normalized);
+        if (selfData != null) {
+            currentMinItems = Math.min(currentMinItems, selfData.variant().getItemsPerTransfer());
+        }
+
+        Block nextBlock = normalized.getBlock().getRelative(facing);
         Location nextLoc = normalizeLocation(nextBlock.getLocation());
 
         if (visited.contains(nextLoc)) {
-            return new DestinationResult(null, pipeLocation, currentMinItems);
+            return new CachedPath(null, normalized, chain, currentMinItems);
         }
         visited.add(nextLoc);
 
-        if (nextBlock.getState() instanceof Container) {
-            return new DestinationResult(nextLoc, pipeLocation, currentMinItems);
+        if (ContainerAdapterRegistry.findAdapter(nextBlock).isPresent()) {
+            return new CachedPath(nextLoc, normalized, chain, currentMinItems);
         }
 
         PipeData nextPipeData = getPipeData(nextLoc);
         if (nextPipeData != null) {
-            // Calculate new minimum based on next pipe's settings
-            int nextMin = Math.min(currentMinItems, nextPipeData.variant().getItemsPerTransfer());
-
-            // If the next pipe is facing INTO this pipe (head-to-head), drop the item
             if (nextPipeData.facing() == facing.getOppositeFace()) {
-                return new DestinationResult(null, pipeLocation, currentMinItems);
+                return new CachedPath(null, normalized, chain, currentMinItems);
             }
-            // Otherwise, follow the next pipe's direction (same direction, perpendicular, etc.)
-            return findDestination(nextLoc, nextPipeData.facing(), visited, nextMin);
+            return findDestination(nextLoc, nextPipeData.facing(), visited, chain, currentMinItems);
         }
 
-        return new DestinationResult(null, pipeLocation, currentMinItems);
+        return new CachedPath(null, normalized, chain, currentMinItems);
     }
 
     public void shutdown() {
         stopTasks();
         pipes.clear();
-        lastTransferTime.clear();
+        pathCache.clear();
+        sleepUntil.clear();
+        deadEndRecheckAt.clear();
     }
 
     /**
-     * Removes orphaned display entities in the given world.
+     * Removes orphaned display entities in this manager's world.
      * An orphaned display entity is one that has a pipe tag but no corresponding pipe block.
-     * @param world The world to scan
      * @return The number of orphaned display entities removed
      */
-    public int cleanupOrphanedDisplays(World world) {
+    public int cleanupOrphanedDisplays() {
         int removed = 0;
         for (Entity entity : world.getEntities()) {
             if (!(entity instanceof ItemDisplay)) continue;
+            if (!PipeTags.isPipeEntity(entity)) continue;
 
-            Set<String> tags = entity.getScoreboardTags();
-            if (!PipeTags.isPipeEntity(tags)) continue;
-
-            String pipeTag = PipeTags.getPipeTag(tags);
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag == null) continue;
 
             Location blockLoc = PipeTags.parseLocation(pipeTag, world);
@@ -753,19 +809,16 @@ public class PipeManager {
     }
 
     /**
-     * Counts orphaned display entities in the given world.
-     * @param world The world to scan
+     * Counts orphaned display entities in this manager's world.
      * @return The number of orphaned display entities
      */
-    public int countOrphanedDisplays(World world) {
+    public int countOrphanedDisplays() {
         int count = 0;
         for (Entity entity : world.getEntities()) {
             if (!(entity instanceof ItemDisplay)) continue;
+            if (!PipeTags.isPipeEntity(entity)) continue;
 
-            Set<String> tags = entity.getScoreboardTags();
-            if (!PipeTags.isPipeEntity(tags)) continue;
-
-            String pipeTag = PipeTags.getPipeTag(tags);
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag == null) continue;
 
             Location blockLoc = PipeTags.parseLocation(pipeTag, world);
@@ -803,20 +856,12 @@ public class PipeManager {
     }
 
     /**
-     * Deletes all pipes and their display entities in the given world.
+     * Deletes all pipes and their display entities in this manager's world.
      * Also removes the pipe blocks themselves.
-     * @param world The world to clear
      * @return The number of pipes deleted
      */
-    public int deleteAllPipes(World world) {
-        List<Location> toRemove = new ArrayList<>();
-
-        for (Map.Entry<Location, PipeData> entry : pipes.entrySet()) {
-            Location loc = entry.getKey();
-            if (!world.equals(loc.getWorld())) continue;
-
-            toRemove.add(loc);
-        }
+    public int deleteAllPipes() {
+        List<Location> toRemove = new ArrayList<>(pipes.keySet());
 
         for (Location loc : toRemove) {
             // Remove the block
@@ -829,6 +874,35 @@ public class PipeManager {
         }
 
         return toRemove.size();
+    }
+
+    public World getWorld() {
+        return world;
+    }
+
+    /**
+     * Re-resolve variant references for all registered pipes against the current registry.
+     * Called after config reload to replace stale PipeVariant objects in PipeData records.
+     */
+    public void reloadVariants(VariantRegistry registry) {
+        for (Map.Entry<Location, PipeData> entry : pipes.entrySet()) {
+            PipeData data = entry.getValue();
+            PipeVariant fresh = registry.getVariant(data.variant().getId());
+            if (fresh != null && fresh != data.variant()) {
+                entry.setValue(new PipeData(data.facing(), data.displayEntityIds(), fresh));
+            } else if (fresh == null) {
+                plugin.getLogger().warning("Variant '" + data.variant().getId() + "' no longer exists after reload; pipe at " + entry.getKey().toVector() + " is stale");
+            }
+        }
+        pathCache.clear();
+        sleepUntil.clear();
+        deadEndRecheckAt.clear();
+    }
+
+    public void refreshAllDisplays() {
+        for (Location location : new ArrayList<>(pipes.keySet())) {
+            updateDisplayEntity(location);
+        }
     }
 
     public void restartTasks() {
@@ -848,13 +922,13 @@ public class PipeManager {
     }
 
     private Location normalizeLocation(Location location) {
-        return new Location(location.getWorld(),
+        return new Location(world,
                 location.getBlockX(),
                 location.getBlockY(),
                 location.getBlockZ());
     }
 
-    public void scanForExistingPipes(World world) {
+    public void scanForExistingPipes() {
         int count = 0;
 
         for (Chunk chunk : world.getLoadedChunks()) {
@@ -867,12 +941,11 @@ public class PipeManager {
     }
 
     public int scanChunk(Chunk chunk) {
-        if (!chunk.isLoaded()) {
+        if (!chunk.isLoaded() || chunk.getWorld() != world) {
             return 0;
         }
 
         int count = 0;
-        World world = chunk.getWorld();
         VariantRegistry registry = plugin.getVariantRegistry();
 
         // Group entities by location to handle multiple entities per pipe
@@ -880,10 +953,16 @@ public class PipeManager {
         Map<Location, BlockFace> facingByLocation = new HashMap<>();
         Map<Location, PipeVariant> variantByLocation = new HashMap<>();
 
+        int migrated = 0;
         for (Entity entity : chunk.getEntities()) {
             if (!(entity instanceof ItemDisplay)) continue;
 
-            String pipeTag = PipeTags.getPipeTag(entity.getScoreboardTags());
+            // Auto-migrate legacy scoreboard tags to PDC
+            if (PipeTags.migrateIfNeeded(entity)) {
+                migrated++;
+            }
+
+            String pipeTag = PipeTags.getPipeTag(entity);
             if (pipeTag == null) continue;
 
             Location location = PipeTags.parseLocation(pipeTag, world);
@@ -925,27 +1004,33 @@ public class PipeManager {
             }
         }
 
+        if (migrated > 0) {
+            plugin.getLogger().info("Migrated " + migrated + " pipe display(s) from scoreboard tags to PDC in chunk [" +
+                    chunk.getX() + ", " + chunk.getZ() + "]");
+        }
+
         return count;
     }
 
     public void unloadPipesInChunk(Chunk chunk) {
+        if (chunk.getWorld() != world) return;
+
         int chunkX = chunk.getX();
         int chunkZ = chunk.getZ();
-        World world = chunk.getWorld();
 
         pipes.entrySet().removeIf(entry -> {
             Location loc = entry.getKey();
-            if (!world.equals(loc.getWorld())) return false;
-
             int locChunkX = loc.getBlockX() >> 4;
             int locChunkZ = loc.getBlockZ() >> 4;
 
             if (locChunkX == chunkX && locChunkZ == chunkZ) {
-                lastTransferTime.remove(loc);
+                sleepUntil.remove(loc);
+                deadEndRecheckAt.remove(loc);
                 return true;
             }
             return false;
         });
+        pathCache.clear();
     }
 
     public BlockFace getFacingFromSkull(Block block) {

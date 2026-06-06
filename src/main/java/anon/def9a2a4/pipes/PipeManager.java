@@ -46,6 +46,7 @@ public class PipeManager {
     private final Map<Location, CachedPath> pathCache = new HashMap<>();
     private final Map<Location, Long> sleepUntil = new HashMap<>();
     private final Map<Location, Long> deadEndRecheckAt = new HashMap<>();
+    private final Random random = new Random();
     private BukkitTask transferTask;
     private BukkitTask particleTask;
 
@@ -614,9 +615,7 @@ public class PipeManager {
         int startingMax = data.variant().getItemsPerTransfer();
         CachedPath path = getOrBuildPath(pipeLocation, facing, startingMax);
 
-        // Use the minimum from the path
-        int transferAmount = path.minItemsPerTransfer();
-        int maxToExtract = Math.min(startingMax, transferAmount);
+        int maxToExtract = path.minItemsPerTransfer();
 
         ItemStack toTransfer = sourceAdapter.peekExtract(sourceBlock, maxToExtract);
         if (toTransfer == null) {
@@ -644,7 +643,6 @@ public class PipeManager {
             }
 
             // Spawn item with velocity set during spawn to avoid dropItem's default velocity
-            Random random = new Random();
             double baseSpeed = (lastPipeFacing == BlockFace.DOWN) ? 0 : 0.25;
             double randomSpread = 0.05;
             final ItemStack finalTransfer = toTransfer;

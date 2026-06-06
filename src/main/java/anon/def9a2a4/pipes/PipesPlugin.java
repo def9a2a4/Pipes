@@ -227,6 +227,11 @@ public class PipesPlugin extends JavaPlugin {
                 }
 
                 ItemStack item = getPipeItem(variant);
+                if (item == null) {
+                    sender.sendMessage(Component.text("Failed to create item for variant: " + itemName)
+                            .color(NamedTextColor.RED));
+                    return true;
+                }
                 item.setAmount(amount);
                 player.getInventory().addItem(item);
                 sender.sendMessage(Component.text("Gave " + amount + "x " + itemName + "!")

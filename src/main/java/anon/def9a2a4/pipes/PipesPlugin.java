@@ -10,6 +10,7 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
+import org.bukkit.event.HandlerList;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.persistence.PersistentDataType;
@@ -141,7 +142,9 @@ public class PipesPlugin extends JavaPlugin {
                 }
 
                 // Re-create unlock listener with new config and sync online players
+                HandlerList.unregisterAll(recipeUnlockListener);
                 recipeUnlockListener = new RecipeUnlockListener(this, recipeManager);
+                getServer().getPluginManager().registerEvents(recipeUnlockListener, this);
                 recipeUnlockListener.syncAllOnlinePlayers();
 
                 // Reload cauldron conversions

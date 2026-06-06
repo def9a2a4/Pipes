@@ -892,6 +892,8 @@ public class PipeManager {
             PipeVariant fresh = registry.getVariant(data.variant().getId());
             if (fresh != null && fresh != data.variant()) {
                 entry.setValue(new PipeData(data.facing(), data.displayEntityIds(), fresh));
+            } else if (fresh == null) {
+                plugin.getLogger().warning("Variant '" + data.variant().getId() + "' no longer exists after reload; pipe at " + entry.getKey().toVector() + " is stale");
             }
         }
         pathCache.clear();

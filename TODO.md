@@ -5,10 +5,10 @@ Reimplementing good ideas from the reviewed `dev` branch as clean, incremental i
 ## Phases
 
 - [x] **Phase 1: PDC migration** — Switch entity tags from scoreboard tags to PersistentDataContainer. Hybrid read (PDC first, scoreboard fallback) for backwards compat. PDC-only writes. Auto-migrate on chunk load.
-- [x] **Phase 2: Per-world PipeManager** — One PipeManager per world via `WeakHashMap<World, PipeManager>`. New `WorldManager` for world load/unload lifecycle. Switch to Paper's `world.submitCyclicalTask()`. Config to enable/disable pipes per world.
-- [ ] **Phase 3: Container adapters** — Extract inventory logic into `ContainerAdapter` interface. Implementations for vanilla containers, furnaces (vanilla hopper parity), and brewing stands (no extract during brewing). `ContainerAdapterRegistry` for lookup.
-- [ ] **Phase 4: Path caching + sleep/throttle** — Cache computed paths with reverse-index invalidation. Validate all chain members (not just destination). Sleep idle pipes (empty source / full dest). Use ticks consistently. Transfer phase offset to spread load.
-- [ ] **Phase 5: Corner pipe improvements** — Multi-output display entities, DOWN-facing head displays, junction fallback routing (`tryCornerJunctionAlternatives`, `tryAlternativeDestination`), UP direction support.
+- [x] **Phase 2: Per-world PipeManager** — One PipeManager per world via `WeakHashMap<World, PipeManager>`. New `WorldManager` for world load/unload lifecycle. Config to enable/disable pipes per world.
+- [x] **Phase 3: Container adapters** — `ContainerAdapter` interface with peek/commit extraction. Implementations for vanilla containers, furnaces (vanilla hopper parity), and brewing stands (no extract during brewing). `ContainerAdapterRegistry` for lookup.
+- [x] **Phase 4: Path caching + sleep/throttle** — Cache computed paths with full-invalidation on topology changes. Validate all chain members. Sleep idle pipes (empty source / full dest) using ticks. Dead-end recheck cooldown. Transfer phase offset to spread load.
+- [ ] **Phase 5: Corner pipe improvements** — (deferred, different approach planned)
 - [ ] **Phase 6: Oxidation system** — Config-gated copper aging. Waxing (honeycomb) and scraping (axe). Batch `tickOxidation()` with single cache eviction pass. Disableable via `oxidation.enabled: false`.
 - [ ] **Phase 7: Listener package reorg** — Move all listeners into `listener/` subpackage.
 
@@ -45,11 +45,10 @@ Reimplementing good ideas from the reviewed `dev` branch as clean, incremental i
 - `PipesPlugin`: replace `private PipeManager pipeManager` with `WeakHashMap<World, PipeManager>`
 - New `WorldManager.java`: listens for `WorldLoadEvent`/`WorldUnloadEvent`, creates/shuts down per-world PipeManagers
 - `PipeManager` constructor takes `(PipesPlugin, World)`, stores world reference
-- Switch from `Bukkit.getScheduler().runTaskTimer()` to Paper's `world.submitCyclicalTask()`
-- `PipeListener`, commands, and `notifyBlockChanged()` route to correct manager via `pipeManager.get(location.getWorld())`
+- `PipeListener`, commands route to correct manager via `pipeManagers.get(location.getWorld())`
 - Chunk scan scoped to the manager's world
-- Randomize transfer task offset per-manager to spread load across worlds
 - Config to enable/disable pipes per world (allowlist or blocklist mode)
+- `/pipes reload` re-evaluates world filters + re-resolves stale `PipeVariant` references via `reloadVariants()`
 
 ### Per-world config (`config.yml`)
 ```yaml
@@ -78,33 +77,25 @@ worlds:
 
 **Goal:** Decouple inventory logic from PipeManager. Enable proper furnace/brewing stand handling.
 
-**New interface — `adapter/ContainerAdapter.java`:**
-- `canReceive(Block)` — can this container accept items?
-- `insert(Block, ItemStack)` — insert items, return leftover
-- `peekExtract(Block, int maxAmount)` — preview extraction without modifying inventory
-- `commitExtract(Block, ItemStack)` — actually remove items after successful transfer
-- `peekExtractMatching(Block, int maxAmount, ItemStack template)` — extract only matching items
-- `hasItems(Block)` — any items present?
-- `requestedItem(Block)` — what item does this container want? (e.g., furnace fuel slot)
+**Interface — `adapter/ContainerAdapter.java`:**
+- `canReceive(Block)`, `insert(Block, ItemStack)`, `peekExtract(Block, int)`, `commitExtract(Block, ItemStack)`, `hasItems(Block)`
+- Static helpers: `tryInsertSlot(Inventory, int, ItemStack)`, `removeFromSlots(Inventory, ItemStack, int, int)`
 
 **Implementations:**
 - `VanillaContainerAdapter` — wraps `Container.getInventory().addItem()` for chests, hoppers, etc.
-- `FurnaceContainerAdapter` — fuel slot only if matching stack exists (vanilla hopper parity), smeltable check for input
-- `BrewingStandContainerAdapter` — no extraction during active brewing, bottle slot aggregation
+- `FurnaceContainerAdapter` — fuel slot only tops up existing stacks (vanilla hopper parity), extracts only from result slot
+- `BrewingStandContainerAdapter` — no extraction during active brewing, routes bottles/ingredients/fuel to correct slots
 
-**Registry — `ContainerAdapterRegistry.java`:**
-- `findAdapter(Block) -> Optional<ContainerAdapter>`
-- Priority: BrewingStand > Furnace > vanilla Container
+**Registry — `adapter/ContainerAdapterRegistry.java`:**
+- `findAdapter(Block) -> Optional<ContainerAdapter>` — checks BrewingStand > Furnace > vanilla Container
 
 **PipeManager refactor:**
-- `transferItems()`: replace `sourceBlock.getState() instanceof Container` with adapter lookup
-- `findDestination()`: replace `Container` check with `adapter.canReceive()`
-- `categorizeSourceBlock()`/`categorizeDestinationBlock()`: use adapter registry for "container" category
+- `transferItems()`: adapter-based peek/commit extraction + insertion with partial insert handling
+- `findDestination()`: adapter check instead of `instanceof Container`
+- `categorizeSourceBlock()`/`categorizeDestinationBlock()`: adapter registry for "container" category
 
-**Files:**
-- New `adapter/` package (4 files)
-- New `ContainerAdapterRegistry.java`
-- `PipeManager.java` — refactor transfer and pathfinding
+**Files created:**
+- `adapter/ContainerAdapter.java`, `adapter/VanillaContainerAdapter.java`, `adapter/FurnaceContainerAdapter.java`, `adapter/BrewingStandContainerAdapter.java`, `adapter/ContainerAdapterRegistry.java`
 
 ---
 
@@ -112,29 +103,26 @@ worlds:
 
 **Goal:** Major performance win for large pipe networks.
 
-### Path caching
+### Path caching (simple full-invalidation)
 - `CachedPath` record: `(destination, lastPipeLocation, pipeChain, minItemsPerTransfer)`
 - `pathCache: Map<Location, CachedPath>` — keyed by pipe start location
-- `chainMembership: Map<Location, Set<Location>>` — reverse index (pipe member → set of path starts that include it)
-- `dirtyPaths: Set<Location>` — marked dirty on register/unregister
 - `getOrBuildPath()` — check cache → validate → rebuild if stale
-- `evictCacheEntry(key)` — remove single entry + clean reverse index
-- `evictCacheByMember(location)` — evict all paths passing through a location (O(fanout), not O(total))
-- `isPathStillValid()` — **must validate ALL chain members**, not just destination (fix from review)
+- `invalidatePathCache()` → `pathCache.clear()` — called from PipeListener on adjacent block changes, and on pipe register/unregister
+- `isPathStillValid()` — validates ALL chain members still exist + destination still has adapter. Dead-end paths use `deadEndRecheckAt` cooldown to avoid rechecking every tick.
+- Decided against reverse-index invalidation — full clear is simpler, pipe topology changes are rare (player actions), and phase offsets amortize rebuild cost across ticks.
 
 ### Sleep/throttle
-- `sleepUntil: Map<Location, Long>` — **use ticks, not millis** (fix dev branch bug)
-- `sleepPipe(location, ticks)` — sets wake tick
+- `sleepUntil: Map<Location, Long>` — tick-based (not millis)
 - Source empty → sleep for `source-empty-ticks` (config, default 60)
 - Dest full → sleep for `dest-full-ticks` (config, default 80)
-- `wakeUpPipe()` — called from `notifyBlockChanged()` when adjacent block changes
-- `nullDestRecheckUntil` — recheck interval for dead-end paths (config, default 40 ticks)
+- `wakeUpPipe()` — called from PipeListener `updateAdjacentPipes()` when adjacent block changes
+- `deadEndRecheckAt: Map<Location, Long>` — cooldown before rechecking dead-end paths (config, default 40 ticks)
 
 ### Transfer phase offset
-- Hash pipe location to spread transfers across ticks
-- `isTransferPhase(currentTick, location, intervalTicks)` — avoids all pipes firing on same tick
+- Task runs every tick; each pipe hashes its location to a phase offset within its variant's interval
+- `isTransferDue(currentTick, loc, intervalTicks)` — replaces millis-based `lastTransferTime`
 
-### Config additions (`config.yml`)
+### Config (`config.yml`)
 ```yaml
 performance:
   sleep:
@@ -143,34 +131,19 @@ performance:
     end-recheck-ticks: 40
 ```
 
-**Files:**
-- `PipeManager.java` — caching, sleep, phase offset
-- `PipeConfig.java` — new config fields
-- `config.yml` — new section
+**Files modified:** `PipeManager.java`, `PipeListener.java`, `PipeConfig.java`, `config.yml`
 
 ---
 
-## Phase 5: Corner Pipe Improvements
+## Phase 5: Corner Pipe Improvements (deferred)
 
-**Goal:** Better visuals and smarter routing for corner/junction pipes.
+Planning a different approach to corner junction routing than what was in the reviewed dev branch. `CachedPath.pipeChain` is already in place to support future corner junction work.
 
-### Display improvements
-- `refreshCornerDisplayEntities()` — reconcile desired vs actual display entities (create missing, remove stale)
-- `getCornerActiveOutputFaces()` — primary facing + adjacent containers/compatible pipes
-- Separate head display entity for DOWN-facing corners (`_head` tag suffix)
-- Per-direction vertical/forward offsets in `display.yml` (`side`, `up`, `down`)
-- UP direction textures for corner pipe types
-
-### Routing improvements
-- `tryCornerJunctionAlternatives()` — scan path chain for corner junctions, try secondary outputs before dropping
-- `tryAlternativeDestination()` — when primary dest is full, try adjacent containers at chain end
-- `canRouteIntoAdjacentPipe(face, pipeData, allowCorner)` — controls corner-to-corner connections
-- Depth limit: `MAX_FALLBACK_DEPTH = 24`
-
-**Files:**
-- `PipeManager.java` — routing logic, display refresh
-- `display.yml` — corner-specific offsets
-- `DisplayConfig.java` — parse new corner config fields
+Potential scope:
+- Multi-output display entities for corner junctions
+- DOWN-facing head displays (`_head` tag suffix already supported in PipeTags)
+- UP direction support for corner pipes
+- Junction fallback routing when primary destination is full
 
 ---
 

@@ -1,14 +1,12 @@
 package anon.def9a2a4.pipes;
 
 import org.bukkit.Bukkit;
-import org.bukkit.GameMode;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.Skull;
 import org.bukkit.entity.ItemDisplay;
-import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -24,7 +22,6 @@ import org.bukkit.event.world.ChunkUnloadEvent;
 import org.bukkit.Location;
 import anon.def9a2a4.pipes.PipeManager.PipeData;
 import com.destroystokyo.paper.event.block.BlockDestroyEvent;
-import io.papermc.paper.event.player.PlayerPickBlockEvent;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.inventory.ItemStack;
@@ -349,30 +346,4 @@ public class PipeListener implements Listener {
         manager.unloadPipesInChunk(event.getChunk());
     }
 
-    // ========== Creative Pick Block ==========
-
-    @EventHandler(priority = EventPriority.HIGHEST)
-    public void onPickBlock(PlayerPickBlockEvent event) {
-        if (event.isCancelled()) return;
-
-        Block block = event.getBlock();
-        if (block.getType() != Material.PLAYER_HEAD && block.getType() != Material.PLAYER_WALL_HEAD) return;
-
-        PipeManager manager = getManager(block.getWorld());
-        if (manager == null) return;
-
-        PipeData pipeData = manager.getPipeData(block.getLocation());
-        if (pipeData == null) return;
-
-        // Only handle in creative — let vanilla/HeadSmith handle survival
-        if (event.getPlayer().getGameMode() != GameMode.CREATIVE) return;
-
-        ItemStack pipeItem = plugin.getPipeItem(pipeData.variant());
-        if (pipeItem == null) return;
-
-        event.setCancelled(true);
-        Player player = event.getPlayer();
-        player.getInventory().setItem(event.getTargetSlot(), pipeItem);
-        player.getInventory().setHeldItemSlot(event.getTargetSlot());
-    }
 }

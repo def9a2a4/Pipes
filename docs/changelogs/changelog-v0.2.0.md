@@ -12,6 +12,7 @@
 - **PDC migration** — pipe entity tags migrated from scoreboard tags to PersistentDataContainer with automatic migration on chunk load
 - **Stale variant references** — config reload now re-resolves PipeVariant objects; warns if a variant was removed from config
 - **Duplicate delete_all message** — fixed double response when running `/pipes delete_all`
+- **Recipe unlock listener on reload** — `/pipes reload` now properly re-registers the recipe unlock listener so config changes take effect
 
 ## Internal
 - Shared adapter helpers (`tryInsertSlot`, `removeFromSlots`) extracted to `ContainerAdapter` interface

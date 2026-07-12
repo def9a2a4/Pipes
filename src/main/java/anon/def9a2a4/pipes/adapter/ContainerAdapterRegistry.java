@@ -14,6 +14,7 @@ public class ContainerAdapterRegistry {
     private static final List<ContainerAdapter> ADAPTERS = List.of(
         new BrewingStandContainerAdapter(),
         new FurnaceContainerAdapter(),
+        new RotationMachineAdapter(),
         new VanillaContainerAdapter()   // catch-all, must be last
     );
 

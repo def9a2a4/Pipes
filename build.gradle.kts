@@ -18,10 +18,15 @@ repositories {
         name = "papermc"
         url = uri("https://repo.papermc.io/repository/maven-public/")
     }
+    maven {
+        name = "jitpack"
+        url = uri("https://jitpack.io")
+    }
 }
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.8-R0.1-SNAPSHOT")
+    compileOnly("com.github.def9a2a4:defCoreLib:0395d36")
     implementation("org.bstats:bstats-bukkit:3.1.0")
 }
 

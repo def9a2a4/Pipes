@@ -4,6 +4,7 @@ version: ${version}
 api-version: 1.21
 author: You
 description: Item pipes for transferring items between containers
+depend: [DefCoreLib]
 
 commands:
   pipes:

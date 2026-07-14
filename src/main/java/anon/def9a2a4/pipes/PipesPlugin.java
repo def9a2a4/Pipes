@@ -75,6 +75,10 @@ public class PipesPlugin extends JavaPlugin {
 
         loadItems();
 
+        // Register pipe block types with CoreLib
+        var coreLibRegistry = anon.def9a2a4.corelib.CoreLibPlugin.getInstance().getRegistry();
+        PipeBlockRegistrar.register(coreLibRegistry, this);
+
         recipeManager = new RecipeManager(this);
         recipeManager.registerRecipes();
 
@@ -86,6 +90,10 @@ public class PipesPlugin extends JavaPlugin {
         try {
             Class.forName("io.papermc.paper.event.player.PlayerPickBlockEvent");
             getServer().getPluginManager().registerEvents(new PickBlockListener(this, pipeManagers), this);
+        } catch (ClassNotFoundException ignored) {}
+        try {
+            Class.forName("anon.def9a2a4.corelib.MachineEjectEvent");
+            getServer().getPluginManager().registerEvents(new MachineEjectListener(pipeManagers), this);
         } catch (ClassNotFoundException ignored) {}
         getServer().getPluginManager().registerEvents(worldManager, this);
         getServer().getPluginManager().registerEvents(recipeUnlockListener, this);

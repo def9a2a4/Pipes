@@ -17,6 +17,14 @@ public interface ContainerAdapter {
     boolean canReceive(Block block);
 
     /**
+     * Check if this adapter accepts items entering from the given face.
+     * Defaults to accepting from any face.
+     */
+    default boolean canReceiveFrom(Block block, org.bukkit.block.BlockFace approachFace) {
+        return canReceive(block);
+    }
+
+    /**
      * Insert items into the container. Returns leftover items that didn't fit, or null if fully inserted.
      */
     ItemStack insert(Block block, ItemStack item);

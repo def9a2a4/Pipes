@@ -1,8 +1,18 @@
+# ⚠️ **DEPRECATED — this plugin has moved to [defCoreLib](https://github.com/def9a2a4/defCoreLib)**
+
+Pipes now lives inside DefCoreLib as a data-driven companion module. Get the current version and docs here:
+
+- **Readme:** https://github.com/def9a2a4/defCoreLib/blob/main/docs/readmes/pipes.md
+- **Pipe catalog:** https://def9a2a4.github.io/defCoreLib-docs/index.html?ns=pipes
+- **Download on Modrinth:** https://modrinth.com/plugin/pipes
+
+*This repository is kept for historical reference only.*
+
+---
+
 # Pipes
 
 A Minecraft Paper plugin that adds pipes for transferring items between containers.
-
-<!-- [Download on Modrinth](https://modrinth.com/plugin/pipes) -->
 
 ![](docs/assets/demo-1.png)
 

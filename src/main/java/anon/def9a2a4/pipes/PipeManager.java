@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Random;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -580,6 +581,42 @@ public class PipeManager {
         sleepUntil.remove(normalizeLocation(location));
     }
 
+    /**
+     * Resolve the display transform for a pipe block. Entry point for CoreLib's DisplayTransformResolver.
+     * Falls back to parsing facing from state when the pipe isn't yet registered (initial placement).
+     */
+    public @org.jspecify.annotations.Nullable Transformation resolveTransform(
+            Block block, @org.jspecify.annotations.Nullable String state, PipeVariant fallbackVariant) {
+        Location location = normalizeLocation(block.getLocation());
+        PipeData data = pipes.get(location);
+
+        BlockFace facing;
+        PipeVariant variant;
+        if (data != null) {
+            facing = data.facing();
+            variant = data.variant();
+        } else if (state != null) {
+            facing = PipeBlockRegistrar.parseFacing(state);
+            variant = fallbackVariant;
+        } else {
+            return null;
+        }
+
+        return calculateTransformation(location, facing, variant);
+    }
+
+    /**
+     * Remove pipe data from the registry without touching display entities.
+     * Used by CoreLib callbacks where display entities are managed externally.
+     */
+    public void removePipeData(Location location) {
+        Location normalized = normalizeLocation(location);
+        pipes.remove(normalized);
+        sleepUntil.remove(normalized);
+        deadEndRecheckAt.remove(normalized);
+        pathCache.clear();
+    }
+
     public void invalidatePathCache() {
         pathCache.clear();
         deadEndRecheckAt.clear();
@@ -664,6 +701,14 @@ public class PipeManager {
             Block destBlock = path.destination().getBlock();
             ContainerAdapter destAdapter = ContainerAdapterRegistry.findAdapter(destBlock).orElse(null);
             if (destAdapter != null) {
+                PipeData lastPipeData = getPipeData(path.lastPipeLocation());
+                BlockFace approachFace = lastPipeData != null
+                    ? lastPipeData.facing().getOppositeFace()
+                    : null;
+                if (approachFace == null || !destAdapter.canReceiveFrom(destBlock, approachFace)) {
+                    sleepPipe(normalizeLocation(pipeLocation), plugin.getPipeConfig().getDestFullSleepTicks());
+                    return false;
+                }
                 ItemStack leftover = destAdapter.insert(destBlock, toTransfer);
                 if (leftover == null) {
                     transferred = true;
@@ -756,8 +801,12 @@ public class PipeManager {
         }
         visited.add(nextLoc);
 
-        if (ContainerAdapterRegistry.findAdapter(nextBlock).isPresent()) {
-            return new CachedPath(nextLoc, normalized, chain, currentMinItems);
+        Optional<ContainerAdapter> adapterOpt = ContainerAdapterRegistry.findAdapter(nextBlock);
+        if (adapterOpt.isPresent()) {
+            if (adapterOpt.get().canReceiveFrom(nextBlock, facing.getOppositeFace())) {
+                return new CachedPath(nextLoc, normalized, chain, currentMinItems);
+            }
+            return new CachedPath(null, normalized, chain, currentMinItems);
         }
 
         PipeData nextPipeData = getPipeData(nextLoc);
@@ -769,6 +818,34 @@ public class PipeManager {
         }
 
         return new CachedPath(null, normalized, chain, currentMinItems);
+    }
+
+    /**
+     * Attempt to deliver items from a machine above through this pipe's chain.
+     * @return true if all items delivered, false if destination full, null if not a valid receiving pipe
+     */
+    public Boolean deliverFromAbove(Block pipeBlock, List<ItemStack> items) {
+        PipeData data = getPipeData(pipeBlock.getLocation());
+        if (data == null) return null;
+        if (data.facing() != BlockFace.DOWN) return null;
+
+        CachedPath path = getOrBuildPath(pipeBlock.getLocation(), data.facing(),
+            data.variant().getItemsPerTransfer());
+        if (path.destination() == null) return null;
+
+        Block destBlock = path.destination().getBlock();
+        ContainerAdapter destAdapter = ContainerAdapterRegistry.findAdapter(destBlock).orElse(null);
+        if (destAdapter == null) return null;
+
+        PipeData lastPipeData = getPipeData(path.lastPipeLocation());
+        BlockFace approachFace = lastPipeData != null ? lastPipeData.facing().getOppositeFace() : null;
+        if (approachFace == null || !destAdapter.canReceiveFrom(destBlock, approachFace)) return false;
+
+        for (ItemStack item : items) {
+            ItemStack leftover = destAdapter.insert(destBlock, item);
+            if (leftover != null) return false;
+        }
+        return true;
     }
 
     public void shutdown() {
